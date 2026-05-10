@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const { Agent } = require("https");
 const pino = require("pino");
 
 const config = require("./config");
@@ -152,6 +153,7 @@ async function startBot() {
     connectTimeoutMs: 60000, 
     defaultQueryTimeoutMs: 120000,
     keepAliveIntervalMs: 10000,
+    agent: new Agent({ family: 4 }),
     version
   });
 

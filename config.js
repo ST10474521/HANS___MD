@@ -2,7 +2,7 @@ require("dotenv").config();
 
 module.exports = {
   SESSION_ID: process.env.SESSION_ID || "HANS-BYTE~PASTE_YOUR_ID_HERE",
-  PAIRING_SERVER_URL: process.env.PAIRING_SERVER_URL || "https://session.hanstech.xyz",
+  PAIRING_SERVER_URL: process.env.PAIRING_SERVER_URL || "https://hans-md-pair-s4k6.onrender.com",
   BOT_NAME: process.env.BOT_NAME || "HANS MD",
   OWNER_NAME: process.env.OWNER_NAME || "Harold",
   OWNER_NUMBER: (process.env.OWNER_NUMBER || "237680260772").split(","),
