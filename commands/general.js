@@ -472,7 +472,7 @@ cmd(
     category: "general",
     desc: "Show WhatsApp account info"
   },
-  async (conn, mek, m, { pushname, senderNumber }) => {
+  async (conn, mek, m, { from, pushname, senderNumber }) => {
     // Profile Picture
     let pfp;
     try {
@@ -543,7 +543,7 @@ cmd(
 ╰━━━━━━━━━━━━━━━━⬣
 `.trim();
 
-    await conn.sendMessage(m.chat, {
+    await conn.sendMessage(from, {
       image: { url: pfp },
       caption: text,
       mentions: [m.sender]
@@ -559,7 +559,7 @@ cmd(
     desc: "Inspect a WhatsApp user",
     usage: ".whois <reply/tag/number>"
   },
-  async (conn, mek, m, { args, reply }) => {
+  async (conn, mek, m, { from, args, reply }) => {
     let target;
     if (m.quoted?.sender) target = m.quoted.sender;
     else if (m.mentionedJid?.[0]) target = m.mentionedJid[0];
@@ -633,7 +633,7 @@ cmd(
 ╰━━━━━━━━━━━━━━━━⬣
 `.trim();
 
-    await conn.sendMessage(m.chat, {
+    await conn.sendMessage(from, {
       image: { url: pfp },
       caption: text,
       mentions: [target]
