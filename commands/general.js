@@ -467,52 +467,177 @@ cmd(
 cmd(
   {
     pattern: "whoami",
-    alias: ["me", "profile"],
+    alias: ["profile", "me"],
     react: "👤",
     category: "general",
-    desc: "Display your user profile",
-    usage: ".whoami",
-    noPrefix: false
+    desc: "Show WhatsApp account info"
   },
-  async (conn, mek, m, { pushname, senderNumber, isDev, isOwner, isSudo, isAdmin, reply }) => {
-    // Determine Rank Labels
-    let rank = "ʟ𝟶𝟷: ᴜsᴇʀ";
-    let tag = "ᴜsᴇʀ";
-    
-    if (isDev) { 
-      rank = "ʀᴏᴏᴛ: ᴅᴇᴠᴇʟᴏᴘᴇʀ"; 
-      tag = "ᴅᴇᴠ"; 
-    } else if (isOwner) { 
-      rank = "ʟ𝟷𝟶: ɢʟᴏʙᴀʟ ᴏᴡɴᴇʀ"; 
-      tag = "ᴏᴡɴᴇʀ"; 
-    } else if (isSudo) { 
-      rank = "ʟ𝟶𝟻: sᴜᴅᴏ ᴍᴏᴅᴇʀᴀᴛᴏʀ"; 
-      tag = "sMod"; 
-    } else if (isAdmin) { 
-      rank = "ʟ𝟶𝟹: ɢʀᴏᴜᴘ ᴀᴅᴍɪɴ"; 
-      tag = "ᴀᴅᴍɪɴ"; 
+  async (conn, mek, m, { pushname, senderNumber }) => {
+    // Profile Picture
+    let pfp;
+    try {
+      pfp = await conn.profilePictureUrl(m.sender, "image");
+    } catch {
+      pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
     }
 
+    // About/Bio
+    let about = "No bio";
+    let setAt = "Unknown";
+    try {
+      const status = await conn.fetchStatus(m.sender);
+      about = status?.status || "No bio";
+      if (status?.setAt) {
+        setAt = new Date(status.setAt).toLocaleString();
+      }
+    } catch {}
+
+    // WhatsApp existence/business
+    let exists = "Unknown";
+    let business = "No";
+    let jid = m.sender;
+    try {
+      const [info] = await conn.onWhatsApp(m.sender);
+      exists = info?.exists ? "Yes ✅" : "No ❌";
+      if (info?.isBusiness) business = "Yes 💼";
+      if (info?.jid) jid = info.jid;
+    } catch {}
+
+    // Business profile
+    let bizDesc = "N/A";
+    let bizCategory = "N/A";
+    try {
+      const biz = await conn.getBusinessProfile(m.sender);
+      if (biz) {
+        bizDesc = biz.description || "None";
+        bizCategory = biz.category || "Unknown";
+      }
+    } catch {}
+
+    // Device Guess
+    let device = "Unknown";
+    if (mek.key.id.startsWith("3A")) device = "Android 🤖";
+    else if (mek.key.id.startsWith("3EB0")) device = "Web/Desktop 💻";
+    else device = "iPhone 🍎";
+
     const text = `
-👤 *ĦΔŇŞ ΜĐ : USER PROFILE*
+╭━━〔 👤 WHATSAPP PROFILE 〕━━⬣
+┃
+┃ 🏷️ Name: ${pushname}
+┃ 📞 Number: ${senderNumber}
+┃ 🆔 JID: ${jid}
+┃ 📲 Device: ${device}
+┃
+┣━━〔 📋 ACCOUNT INFO 〕━━⬣
+┃ ✅ Exists: ${exists}
+┃ 💼 Business: ${business}
+┃
+┣━━〔 ✨ ABOUT 〕━━⬣
+┃ 💭 ${about}
+┃ 🕒 Updated: ${setAt}
+┃
+┣━━〔 🏢 BUSINESS INFO 〕━━⬣
+┃ 📂 Category: ${bizCategory}
+┃ 📝 Description: ${bizDesc}
+┃
+╰━━━━━━━━━━━━━━━━⬣
+`.trim();
 
-┌──────────────┈⳹
-│   ${toFancy('Identity')}  : ${pushname || "Unknown"}
-├──────────────┈⳹
-│ ◈ ${toFancy('Num')}   : ${senderNumber}
-│ ◈ ${toFancy('Rank')}  : ${rank}
-│ ◈ ${toFancy('Tag')}   : [${tag}]
-│ ◈ ${toFancy('Status')} : Verified ⚡
-└──────────────┈⳹
+    await conn.sendMessage(m.chat, {
+      image: { url: pfp },
+      caption: text,
+      mentions: [m.sender]
+    }, { quoted: mek });
+  }
+);
 
-*User JID:*
-_${m.sender}_
-    `.trim();
+cmd(
+  {
+    pattern: "whois",
+    react: "🕵️",
+    category: "general",
+    desc: "Inspect a WhatsApp user",
+    usage: ".whois <reply/tag/number>"
+  },
+  async (conn, mek, m, { args, reply }) => {
+    let target;
+    if (m.quoted?.sender) target = m.quoted.sender;
+    else if (m.mentionedJid?.[0]) target = m.mentionedJid[0];
+    else if (args[0]) {
+      const num = args[0].replace(/[^0-9]/g, "");
+      if (!num) return reply("⚠️ Invalid number.");
+      target = num + "@s.whatsapp.net";
+    }
+    else if (!m.isGroup) target = m.sender;
+    else return reply("⚠️ Reply, tag, enter a number, or use in DM.");
 
-    await reply(text, { 
-      mentions: [m.sender],
-      ...getContext({ title: "Identity Verified", body: `Rank: ${tag}` })
-    });
+    const number = target.split("@")[0];
+    let name = conn.contacts?.[target]?.notify || conn.contacts?.[target]?.name || "Unknown";
+
+    let pfp;
+    try {
+      pfp = await conn.profilePictureUrl(target, "image");
+    } catch {
+      pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
+    }
+
+    let about = "No bio";
+    let setAt = "Unknown";
+    try {
+      const status = await conn.fetchStatus(target);
+      about = status?.status || "No bio";
+      if (status?.setAt) {
+        setAt = new Date(status.setAt).toLocaleString();
+      }
+    } catch {}
+
+    let exists = "Unknown";
+    let business = "No";
+    let jid = target;
+    try {
+      const [info] = await conn.onWhatsApp(target);
+      exists = info?.exists ? "Yes ✅" : "No ❌";
+      business = info?.isBusiness ? "Yes 💼" : "No";
+      jid = info?.jid || target;
+    } catch {}
+
+    let bizCategory = "N/A";
+    let bizDesc = "N/A";
+    try {
+      const biz = await conn.getBusinessProfile(target);
+      if (biz) {
+        bizCategory = biz.category || "Unknown";
+        bizDesc = biz.description || "None";
+      }
+    } catch {}
+
+    const text = `
+╭━━〔 🕵️ USER INSPECTOR 〕━━⬣
+┃
+┃ 👤 Name: ${name}
+┃ 📞 Number: ${number}
+┃ 🆔 JID: ${jid}
+┃
+┣━━〔 📋 ACCOUNT INFO 〕━━⬣
+┃ ✅ Exists: ${exists}
+┃ 💼 Business: ${business}
+┃
+┣━━〔 ✨ ABOUT 〕━━⬣
+┃ 💭 ${about}
+┃ 🕒 Updated: ${setAt}
+┃
+┣━━〔 🏢 BUSINESS INFO 〕━━⬣
+┃ 📂 Category: ${bizCategory}
+┃ 📝 Description: ${bizDesc}
+┃
+╰━━━━━━━━━━━━━━━━⬣
+`.trim();
+
+    await conn.sendMessage(m.chat, {
+      image: { url: pfp },
+      caption: text,
+      mentions: [target]
+    }, { quoted: mek });
   }
 );
 
