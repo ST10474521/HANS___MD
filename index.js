@@ -63,60 +63,8 @@ const CREDS_PATH = path.join(__dirname, "sessions", "creds.json");
 let isFirstConnect = true;
 const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
-async function fetchSessionFromCloud() {
-  const sessionPath = path.join(__dirname, "sessions");
-  const credsPath = path.join(sessionPath, "creds.json");
-
-  if (fs.existsSync(credsPath)) return;
-  if (!config.SESSION_ID || !config.SESSION_ID.startsWith("HANS-BYTE~")) return;
-
-  console.log("📡 Connecting to cloud vault (60s)...");
-  try {
-    // DO NOT strip the prefix, as the server logs show it saves the FULL string to MongoDB
-    const fullId = encodeURIComponent(config.SESSION_ID.trim());
-    const route = `${config.PAIRING_SERVER_URL.replace(/\/$/, "")}/session/${fullId}`;
-    
-    console.log(`🔍 Querying: /session/${config.SESSION_ID.substring(0, 18)}...`);
-    
-    const response = await axios.get(route, { 
-      timeout: 60000,
-      headers: { 'Accept': 'application/json' }
-    });
-
-    if (!response.data) throw new Error("Server returned empty response.");
-    
-    // Check if we got HTML instead of JSON
-    if (typeof response.data === 'string' && (response.data.includes('<!DOCTYPE') || response.data.includes('<html'))) {
-       throw new Error("Cloud returned HTML (likely landing page) instead of Session JSON. Ensure your ID is valid.");
-    }
-
-    if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
-
-    const sessionObj = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
-    
-    // Validate by checking for a core WhatsApp authentication key
-    if (!sessionObj.noiseKey && !sessionObj.creds) {
-       throw new Error("Retrieved data is not a valid WhatsApp session (missing noiseKey).");
-    }
-
-    // If the server returns the creds directly, use them; if nested, extract them.
-    const finalCreds = sessionObj.creds || sessionObj;
-
-    fs.writeFileSync(credsPath, JSON.stringify(finalCreds, null, 2));
-    console.log("✅ Cloud synchronization complete!");
-  } catch (err) {
-    const status = err.response ? `[Status: ${err.response.status}]` : "";
-    console.warn(`⚠️ Cloud fetch failed ${status}: ${err.message}`);
-    console.log("💡 Tip: If 404, re-pair your bot at: https://sessions.hanstech.xyz");
-  }
-}
-
+// ─── START BOT ───
 async function startBot() {
-  // ─── ARCHIVED: CLOUD RESTORATION (Disabled until server is back) ───
-  /*
-  const { restoreSession } = require("./lib/session");
-  await restoreSession(config.SESSION_ID);
-  */
 
   let pairingCode = false;
   try {
@@ -528,7 +476,5 @@ async function startBot() {
 }
 
 // ─── START BOT ───
-// fetchSessionFromCloud().then(() => startBot()); 
-// Cloud vault is currently offline. Jumping straight to startBot().
 startBot();
 

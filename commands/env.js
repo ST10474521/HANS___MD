@@ -34,7 +34,7 @@ cmd({
   let text = "╭━═『 ENV VARS 』━╮\n\n";
   for (const [key, val] of Object.entries(env)) {
     // Mask sensitive keys
-    const displayVal = ["SESSION_ID", "TG_BOT_TOKEN", "TG_CHAT_ID"].includes(key) 
+    const displayVal = ["TG_BOT_TOKEN", "TG_CHAT_ID"].includes(key) 
       ? "********" 
       : val;
     text += `│ ◈ *${key}*: ${displayVal}\n`;

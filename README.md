@@ -166,8 +166,6 @@ HANS-MD v2.1.4 (Quantum Edition) features a **Direct Interactive Pairing System*
    - Select **"Link with phone number instead"**.
    - Enter the code displayed in your bot's logs.
 
-> 💡 **Legacy Support:** The bot still supports `SESSION_ID` from the old cloud vault if you prefer to use pre-linked sessions.
-
 ---
 
 ## 🚀 Deployment
@@ -303,7 +301,7 @@ pnpm install
 
 # 5. Create .env file (copy from example.env and edit)
 copy example.env .env
-# Edit .env with your SESSION_ID
+# Edit .env with your OWNER_NUMBER
 
 # 6. Run the bot
 node index.js
@@ -317,7 +315,6 @@ Create a `.env` file in the root directory (or copy from `example.env`):
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `SESSION_ID` | Your MEGA-based session ID | — | ✅ Yes |
 | `BOT_NAME` | Display name of the bot | `HANS MD` | ❌ |
 | `OWNER_NAME` | Owner's display name | `Harold` | ❌ |
 | `OWNER_NUMBER` | Owner's number (with country code) | `237680260772` | ✅ Yes |
