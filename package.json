@@ -1,6 +1,6 @@
 {
   "name": "hans___md",
-  "version": "2.1.4",
+  "version": "2.1.4.1",
   "description": "HANS MD WhatsApp bot (Baileys v7 master, CommonJS)",
   "main": "index.js",
   "type": "commonjs",

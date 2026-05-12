@@ -473,54 +473,69 @@ cmd(
     desc: "Show WhatsApp account info"
   },
   async (conn, mek, m, { from, pushname, senderNumber }) => {
-    // Profile Picture
-    let pfp;
     try {
-      pfp = await conn.profilePictureUrl(m.sender, "image");
-    } catch {
-      pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
-    }
-
-    // About/Bio
-    let about = "No bio";
-    let setAt = "Unknown";
-    try {
-      const status = await conn.fetchStatus(m.sender);
-      about = status?.status || "No bio";
-      if (status?.setAt) {
-        setAt = new Date(status.setAt).toLocaleString();
+      console.log(`[DEBUG] whoami START: from=${from}, sender=${m.sender}`);
+      
+      // Profile Picture
+      let pfp;
+      try {
+          pfp = await conn.profilePictureUrl(m.sender, "image");
+          console.log(`[DEBUG] PFP Success: ${pfp}`);
+      } catch (e) {
+          console.log(`[DEBUG] PFP Error: ${e.message}`);
+          pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
       }
-    } catch {}
 
-    // WhatsApp existence/business
-    let exists = "Unknown";
-    let business = "No";
-    let jid = m.sender;
-    try {
-      const [info] = await conn.onWhatsApp(m.sender);
-      exists = info?.exists ? "Yes ✅" : "No ❌";
-      if (info?.isBusiness) business = "Yes 💼";
-      if (info?.jid) jid = info.jid;
-    } catch {}
-
-    // Business profile
-    let bizDesc = "N/A";
-    let bizCategory = "N/A";
-    try {
-      const biz = await conn.getBusinessProfile(m.sender);
-      if (biz) {
-        bizDesc = biz.description || "None";
-        bizCategory = biz.category || "Unknown";
+      // About/Bio
+      let about = "No bio";
+      let setAt = "Unknown";
+      try {
+          const status = await conn.fetchStatus(m.sender);
+          console.log(`[DEBUG] Status Fetched: ${JSON.stringify(status)}`);
+          about = status?.status || "No bio";
+          if (status?.setAt) {
+              setAt = new Date(status.setAt).toLocaleString();
+          }
+      } catch (e) {
+          console.log(`[DEBUG] Status Error: ${e.message}`);
       }
-    } catch {}
 
-    // Device Guess
-    let device = "Unknown";
-    if (mek.key.id.startsWith("3A")) device = "Android 🤖";
-    else if (mek.key.id.startsWith("3EB0")) device = "Web/Desktop 💻";
-    else device = "iPhone 🍎";
+      // WhatsApp existence/business
+      let exists = "Unknown";
+      let business = "No";
+      let jid = m.sender;
+      try {
+          const [info] = await conn.onWhatsApp(m.sender);
+          console.log(`[DEBUG] onWhatsApp Fetched: ${JSON.stringify(info)}`);
+          exists = info?.exists ? "Yes ✅" : "No ❌";
+          if (info?.isBusiness) business = "Yes 💼";
+          if (info?.jid) jid = info.jid;
+      } catch (e) {
+          console.log(`[DEBUG] onWhatsApp Error: ${e.message}`);
+      }
 
-    const text = `
+      // Business profile
+      let bizDesc = "N/A";
+      let bizCategory = "N/A";
+      try {
+          const biz = await conn.getBusinessProfile(m.sender);
+          console.log(`[DEBUG] BusinessProfile Fetched: ${JSON.stringify(biz)}`);
+          if (biz) {
+              bizDesc = biz.description || "None";
+              bizCategory = biz.category || "Unknown";
+          }
+      } catch (e) {
+          console.log(`[DEBUG] Business Error: ${e.message}`);
+      }
+
+      // Device Guess
+      let device = "Unknown";
+      if (mek.key.id.startsWith("3A")) device = "Android 🤖";
+      else if (mek.key.id.startsWith("3EB0")) device = "Web/Desktop 💻";
+      else device = "iPhone 🍎";
+      console.log(`[DEBUG] Device: ${device}`);
+
+      const text = `
 ╭━━〔 👤 WHATSAPP PROFILE 〕━━⬣
 ┃
 ┃ 🏷️ Name: ${pushname}
@@ -543,11 +558,16 @@ cmd(
 ╰━━━━━━━━━━━━━━━━⬣
 `.trim();
 
-    await conn.sendMessage(from, {
-      image: { url: pfp },
-      caption: text,
-      mentions: [m.sender]
-    }, { quoted: mek });
+      console.log(`[DEBUG] Attempting to send message to ${from}`);
+      await conn.sendMessage(from, {
+          image: { url: pfp },
+          caption: text,
+          mentions: [m.sender]
+      }, { quoted: mek });
+      console.log(`[DEBUG] whoami DONE`);
+    } catch (err) {
+      console.error(`[CRITICAL] whoami CRASH:`, err);
+    }
   }
 );
 
