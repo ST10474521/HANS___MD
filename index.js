@@ -14,6 +14,40 @@ const { sendTG } = require("./lib/tg_report");
 
 const logger = pino({ level: "info" });
 let presenceInterval = null; // Global to manage single interval
+const GROUP_EVENT_DEDUPE = new Map();
+
+function normalizeParticipantId(id) {
+  if (!id || typeof id !== "string") return "";
+  const left = id.includes("@") ? id.split("@")[0] : id;
+  return left.includes(":") ? left.split(":")[0] : left;
+}
+
+function shouldSkipGroupEvent(groupId, action, participantId) {
+  const key = `${groupId}:${action}:${participantId}`;
+  const now = Date.now();
+  const lastSeen = GROUP_EVENT_DEDUPE.get(key);
+  if (lastSeen && now - lastSeen < 15000) return true;
+  GROUP_EVENT_DEDUPE.set(key, now);
+
+  // Keep cache bounded to avoid unbounded growth.
+  if (GROUP_EVENT_DEDUPE.size > 1000) {
+    for (const [k, ts] of GROUP_EVENT_DEDUPE.entries()) {
+      if (now - ts > 60000) GROUP_EVENT_DEDUPE.delete(k);
+    }
+  }
+  return false;
+}
+
+async function fetchGroupPictureMedia(conn, groupId) {
+  try {
+    const url = await conn.profilePictureUrl(groupId, "image");
+    if (!url) return null;
+    const res = await axios.get(url, { responseType: "arraybuffer" });
+    return Buffer.from(res.data);
+  } catch {
+    return null;
+  }
+}
 
 // ─── FATAL ERROR TELEGRAM REPORTING ───
 function formatCrashReport(type, error) {
@@ -272,18 +306,19 @@ async function startBot() {
       // Handle status messages (auto-read and react) if enabled
       const db = getDB();
       const autoStatus = db.env?.AUTO_STATUS !== undefined ? db.env.AUTO_STATUS : config.AUTO_STATUS;
-      if (mek.key.remoteJid === "status@broadcast" && !mek.key.fromMe && autoStatus) {
+      const autoStatusLike = db.env?.AUTO_STATUS_LIKE !== undefined ? db.env.AUTO_STATUS_LIKE : config.AUTO_STATUS_LIKE;
+      if (mek.key.remoteJid === "status@broadcast" && !mek.key.fromMe && (autoStatus || autoStatusLike)) {
         try {
-          // Mark status as seen
-          await conn.readMessages([mek.key]);
-          
-          // React to the status (heart emoji)
-          await conn.sendMessage('status@broadcast', {
-            react: {
-              text: '??',
-              key: mek.key
-            }
-          });
+          if (autoStatus) await conn.readMessages([mek.key]);
+          if (autoStatusLike) {
+            const statusOwnerJid = mek.key.participant || mek.key.remoteJid;
+            await conn.sendMessage(statusOwnerJid, {
+              react: {
+                text: "❤️",
+                key: mek.key
+              }
+            });
+          }
         } catch (error) {
           // Ignore errors with status reactions
         }
@@ -388,35 +423,33 @@ async function startBot() {
         }
       }
 
-      // Try getting group profile picture
-      let groupPP = "";
-      try {
-        groupPP = await conn.profilePictureUrl(id, "image");
-      } catch {
-        groupPP = "https://i.ibb.co/7Qq7ZQk/group-default.png"; // fallback
-      }
+      // Fetch group profile picture as media buffer so WhatsApp uploads it directly.
+      const groupPPMedia = await fetchGroupPictureMedia(conn, id);
 
       for (const p of participants) {
         const targetJid = typeof p === "object" ? (p.phoneNumber || p.id || "") : String(p);
         if (!targetJid) continue;
-        const targetNum = targetJid.split("@")[0];
+        const targetNum = normalizeParticipantId(targetJid);
+        if (!targetNum) continue;
+
+        if (shouldSkipGroupEvent(id, action, targetNum)) continue;
 
         // ================= WELCOME =================
         if (action === "add" && isWelcomeEnabled) {
           let msg =
             typeof welcomeData === "object" && welcomeData.message
               ? welcomeData.message
-              : `╭━━━━━═ 『 WELCOME 』 ═━━━━━╮
-│
-│  👤 *User:* @${targetNum}
-│  🏠 *Group:* ${groupName}
-│  👥 *Members:* ${memberCount}
-│  🔗 *Invite:* ${groupLink}
-│
-│  ✨ *Welcome to our community!*
-│  ✨ *Please read the group description.*
-│
-╰━━━━━━━══━━━━══━━━━━━━╯`;
+              : `┌──────────────┈⳹
+│   ꃅꍏꈤꌗ ꂵꀸ : WELCOME
+└┬─────────────┈⳹
+ ┌┤ User    : @${targetNum}
+ ││ Group   : ${groupName}
+ ││ Members : ${memberCount}
+ ││ Invite  : ${groupLink}
+ └─────────────┈⳹
+
+_Welcome to our community._
+_Please read the group description._`;
 
           msg = msg
             .replace(/@?\{user\}/g, `@${targetNum}`)
@@ -424,15 +457,17 @@ async function startBot() {
             .replace(/\{members\}/g, memberCount)
             .replace(/\{link\}/g, groupLink);
 
-          await conn.sendMessage(id, {
-            image: { url: groupPP },
-            caption: msg,
-            mentions: [targetJid],
-            contextInfo: require("./lib/newsletter").getContext({
-              title: groupName,
-              body: `Total Members: ${memberCount} 🚀`
-            })
-          });
+          await conn.sendMessage(
+            id,
+            {
+              ...(groupPPMedia ? { image: groupPPMedia, caption: msg } : { text: msg }),
+              mentions: [targetJid],
+              contextInfo: require("./lib/newsletter").getContext({
+                title: groupName,
+                body: `Total Members: ${memberCount} 🚀`
+              })
+            }
+          );
         }
 
         // ================= GOODBYE =================
@@ -440,31 +475,33 @@ async function startBot() {
           let msg =
             typeof goodbyeData === "object" && goodbyeData.message
               ? goodbyeData.message
-              : `╭━━━━━═ 『 GOODBYE 』 ═━━━━━╮
-│
-│  👤 *User:* @${targetNum}
-│  🏠 *Group:* ${groupName}
-│  👥 *Remaining:* ${memberCount}
-│
-│  🥀 *A legend has left the building.*
-│  🥀 *We'll miss you, @${targetNum}!*
-│
-╰━━━━━━━══━━━━══━━━━━━━╯`;
+              : `┌──────────────┈⳹
+│   ꃅꍏꈤꌗ ꂵꀸ : GOODBYE
+└┬─────────────┈⳹
+ ┌┤ User      : @${targetNum}
+ ││ Group     : ${groupName}
+ ││ Remaining : ${memberCount}
+ └─────────────┈⳹
+
+_A legend has left the building._
+_We'll miss you, @${targetNum}!_`;
 
           msg = msg
             .replace(/@?\{user\}/g, `@${targetNum}`)
             .replace(/\{group\}/g, groupName)
             .replace(/\{members\}/g, memberCount);
 
-          await conn.sendMessage(id, {
-            image: { url: groupPP },
-            caption: msg,
-            mentions: [targetJid],
-            contextInfo: require("./lib/newsletter").getContext({
-              title: groupName,
-              body: `Member Count: ${memberCount} ✨`
-            })
-          });
+          await conn.sendMessage(
+            id,
+            {
+              ...(groupPPMedia ? { image: groupPPMedia, caption: msg } : { text: msg }),
+              mentions: [targetJid],
+              contextInfo: require("./lib/newsletter").getContext({
+                title: groupName,
+                body: `Member Count: ${memberCount} ✨`
+              })
+            }
+          );
         }
       }
     } catch (err) {

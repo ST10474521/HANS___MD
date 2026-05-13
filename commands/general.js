@@ -94,6 +94,76 @@ cmd(
   }
 );
 
+cmd(
+  {
+    pattern: "repo",
+    alias: ["repository", "source", "script"],
+    react: "📦",
+    category: "general",
+    desc: "Show bot repository information",
+    usage: ".repo",
+    noPrefix: false
+  },
+  async (conn, mek, m, { from, reply }) => {
+    const repoUrl = "https://github.com/haroldmth/hans___md";
+
+    const match = repoUrl.match(/github\.com\/([^/]+)\/([^/?#]+)/i);
+    if (!match) {
+      await reply(`Repository: ${repoUrl}`);
+      return;
+    }
+
+    const owner = match[1];
+    const repo = match[2].replace(/\.git$/i, "");
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}`;
+
+    try {
+      const res = await fetch(apiUrl, {
+        headers: {
+          "user-agent": `${config.BOT_NAME || "HANS-MD"}/repo-command`,
+          "accept": "application/vnd.github+json"
+        }
+      });
+
+      if (!res.ok) throw new Error(`GitHub API failed (${res.status})`);
+      const data = await res.json();
+
+      const text = [
+        `*📦 ${data.full_name || `${owner}/${repo}`}*`,
+        ``,
+        `*Description:* ${data.description || "No description"}`,
+        `*Stars:* ${data.stargazers_count ?? 0}`,
+        `*Forks:* ${data.forks_count ?? 0}`,
+        `*Watchers:* ${data.subscribers_count ?? data.watchers_count ?? 0}`,
+        `*Language:* ${data.language || "Unknown"}`,
+        `*Version:* v${CURRENT_VERSION}`,
+        `*Repo URL:* ${data.html_url || repoUrl}`
+      ].join("\n");
+
+      await conn.sendMessage(
+        from,
+        {
+          text,
+          contextInfo: getContext({
+            title: "Repository Information",
+            body: data.full_name || `${owner}/${repo}`
+          })
+        },
+        { quoted: mek }
+      );
+    } catch {
+      await reply(
+        [
+          `*📦 ${owner}/${repo}*`,
+          ``,
+          `*Version:* v${CURRENT_VERSION}`,
+          `*Repo URL:* ${repoUrl}`
+        ].join("\n")
+      );
+    }
+  }
+);
+
 function pickActivePrefixes() {
   const db = getDB();
   const p = db?.env?.PREFIX;

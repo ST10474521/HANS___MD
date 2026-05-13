@@ -1,9 +1,22 @@
 const { cmd } = require("../command");
 
+function normalizeJid(input) {
+  if (!input) return "";
+  const raw = String(input).trim();
+  if (!raw) return "";
+  if (raw.endsWith("@s.whatsapp.net")) return raw;
+  if (raw.includes("@")) {
+    const base = raw.split("@")[0].split(":")[0].replace(/\D/g, "");
+    return base ? `${base}@s.whatsapp.net` : "";
+  }
+  const digits = raw.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : "";
+}
+
 cmd(
   {
     pattern: "creategroup",
-    alias: ["cg", "makegroup"],
+    alias: ["cg", "makegroup", "creategrouo"],
     react: "",
     category: "group",
     desc: "Create a new WhatsApp group",
@@ -12,38 +25,73 @@ cmd(
   },
   async (conn, mek, m, { from, reply, args, mentionedJid, isOwner, isSudo }) => {
     if (!isOwner && !isSudo) return reply("Only owners and sudo can create groups.");
-    
-    const groupName = args[0];
-    if (!groupName) {
-      return reply("Please provide a group name.\nUsage: .creategroup GroupName @user1 @user2 ...");
+
+    const raw = (m.body || "").replace(/^[^\s]+\s*/, "").trim();
+    if (!raw) {
+      return reply("Please provide a group name and at least one member.\nUsage: .creategroup Group Name | @user1 2376xxxxxxx");
     }
-    
-    // Get participants from mentions and args
-    let participants = [];
-    
-    // Add mentioned users
-    if (Array.isArray(mentionedJid) && mentionedJid.length > 0) {
-      participants = [...mentionedJid];
-    }
-    
-    // Add any phone numbers from args (excluding the first arg which is group name)
-    for (let i = 1; i < args.length; i++) {
-      const arg = args[i].trim();
-      if (arg && /^\d+$/.test(arg)) {
-        // Pure number, convert to JID
-        participants.push(`${arg}@s.whatsapp.net`);
-      } else if (arg && arg.includes("@") && arg.includes(".")) {
-        // Already a JID format
-        participants.push(arg);
+
+    let groupName = "";
+    let membersPart = "";
+    if (raw.includes("|")) {
+      const [namePart, ...rest] = raw.split("|");
+      groupName = String(namePart || "").trim();
+      membersPart = rest.join("|").trim();
+    } else {
+      const tokens = raw.split(/\s+/).filter(Boolean);
+      const firstMemberIdx = tokens.findIndex((t) => !!normalizeJid(t));
+      if (firstMemberIdx === -1 && (!Array.isArray(mentionedJid) || mentionedJid.length === 0)) {
+        // No explicit members in text: treat full input as group name.
+        groupName = raw;
+        membersPart = "";
+      } else {
+        // Legacy mode without "|" where members are appended after name.
+        if (firstMemberIdx === -1) {
+          groupName = raw;
+          membersPart = "";
+        } else {
+          groupName = tokens.slice(0, firstMemberIdx).join(" ").trim();
+          membersPart = tokens.slice(firstMemberIdx).join(" ").trim();
+        }
       }
     }
-    
-    // Always include the bot owner
-    const ownerJid = conn.user?.id;
-    if (ownerJid && !participants.includes(ownerJid)) {
-      participants.push(ownerJid);
+
+    if (!groupName) {
+      return reply("Invalid group name.\nUsage: .creategroup Group Name | @user1 2376xxxxxxx");
     }
-    
+
+    const participantsSet = new Set();
+
+    // Mentioned users first.
+    if (Array.isArray(mentionedJid)) {
+      for (const jid of mentionedJid) {
+        const normalized = normalizeJid(jid);
+        if (normalized) participantsSet.add(normalized);
+      }
+    }
+
+    // Parse plain numbers/jids from the right side.
+    if (membersPart) {
+      const tokens = membersPart.split(/\s+/).filter(Boolean);
+      for (const token of tokens) {
+        const normalized = normalizeJid(token);
+        if (normalized) participantsSet.add(normalized);
+      }
+    }
+
+    // Include command sender so WA has at least one valid participant.
+    const senderJid = normalizeJid(m.sender || "");
+    if (senderJid) participantsSet.add(senderJid);
+
+    // Include bot account too.
+    const botJid = normalizeJid(conn.user?.id || "");
+    if (botJid) participantsSet.add(botJid);
+
+    let participants = Array.from(participantsSet);
+    if (participants.length === 0) {
+      return reply("No valid participants found. Mention users or pass numbers after '|'.");
+    }
+
     // WhatsApp allows up to 1023 participants in group creation
     // But for safety, limit to reasonable number
     if (participants.length > 50) {
@@ -113,7 +161,9 @@ cmd(
       const sudoNumbers = db.sudo || [];
       
       for (const participant of participants) {
-        const participantNumber = participant.id.split("@")[0];
+        const normalizedParticipantJid = normalizeJid(participant.id || participant.lid || participant.phoneNumber || "");
+        if (!normalizedParticipantJid) continue;
+        const participantNumber = normalizedParticipantJid.split("@")[0];
         
         // Include if owner, sudo, or admin
         const isOwner = ownerNumbers.includes(participantNumber);
@@ -121,12 +171,12 @@ cmd(
         const isAdmin = participant.admin === "admin" || participant.admin === "superadmin";
         
         if (isOwner || isSudo || isAdmin) {
-          specialParticipants.push(participant.id);
+          specialParticipants.push(normalizedParticipantJid);
         }
       }
       
       // Always include the bot
-      const botJid = conn.user?.id;
+      const botJid = normalizeJid(conn.user?.id || "");
       if (botJid && !specialParticipants.includes(botJid)) {
         specialParticipants.push(botJid);
       }
