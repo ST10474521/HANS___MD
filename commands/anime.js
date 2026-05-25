@@ -2,6 +2,18 @@ const { cmd } = require("../command");
 const { getContext } = require("../lib/newsletter");
 const axios = require("axios");
 const config = require("../config");
+const BASE = "https://api.jikan.moe/v4";
+
+async function resolveAnimeId(query) {
+  const value = query?.trim();
+  if (!value) return null;
+  if (/^[0-9]+$/.test(value)) return value;
+
+  const url = `${BASE}/anime?q=${encodeURIComponent(value)}&limit=1`;
+  const response = await axios.get(url);
+  const payload = response.data;
+  return payload?.data?.[0]?.mal_id ? String(payload.data[0].mal_id) : null;
+}
 
 // --- ANIME SEARCH ---
 cmd({
@@ -16,31 +28,32 @@ cmd({
   try {
     if (!q) return reply("Yo! What anime are we looking for? Usage: .anime naruto");
 
-    const url = `https://apis.davidcyril.name.ng/anime/search?q=${encodeURIComponent(q)}`;
-    const { data } = await axios.get(url);
+    const url = `${BASE}/anime?q=${encodeURIComponent(q)}&limit=5`;
+    const response = await axios.get(url);
+    const payload = response.data;
 
-    if (!data.success || !data.results.length) {
+    if (!payload.data || !payload.data.length) {
       return reply("❌ *No results found.* I couldn't find that one.");
     }
 
-    const results = data.results.slice(0, 5); // Limit to top 5
-    let txt = `╭━═『 *ANIME SEARCH* 』━╮\n┃ 🔎 *Query:* ${q}\n┃ 🔢 *Results:* ${data.total}\n╰━━━━━━━━━━━━━━━╯\n\n`;
+    const results = payload.data.slice(0, 5);
+    let txt = `╭━═『 *ANIME SEARCH* 』━╮\n┃ 🔎 *Query:* ${q}\n┃ 🔢 *Results:* ${payload.pagination?.items?.total ?? results.length}\n╰━━━━━━━━━━━━━━━╯\n\n`;
 
     results.forEach((anime, i) => {
       txt += `*${i + 1}. ${anime.title}*\n`;
-      txt += `🆔 *ID:* ${anime.id}\n`;
-      txt += `⭐ *Score:* ${anime.score}\n`;
-      txt += `📺 *Type:* ${anime.type} | *Episodes:* ${anime.episodes}\n`;
+      txt += `🆔 *ID:* ${anime.mal_id}\n`;
+      txt += `⭐ *Score:* ${anime.score ?? "N/A"}\n`;
+      txt += `📺 *Type:* ${anime.type ?? "N/A"} | *Episodes:* ${anime.episodes ?? "N/A"}\n`;
       txt += `📅 *Year:* ${anime.year || "N/A"}\n`;
       txt += `──────────────\n`;
     });
 
-    txt += `\n*Tips:* Use \`.animeinfo [id]\` for more details.\n🚀 *${config.BOT_NAME}*`;
+    txt += `\n*Tips:* Use \.animeinfo [id] for more details.\n🚀 *${config.BOT_NAME}*`;
 
     await conn.sendMessage(from, {
-      image: { url: results[0].image },
+      image: { url: results[0]?.images?.jpg?.image_url || results[0]?.images?.webp?.image_url },
       caption: txt,
-      contextInfo: getContext({ title: "Anime Database Search", body: `Found ${data.results.length} matches` })
+      contextInfo: getContext({ title: "Anime Database Search", body: `Found ${payload.data.length} matches` })
     }, { quoted: mek });
 
   } catch (err) {
@@ -55,45 +68,55 @@ cmd({
   alias: ["ainfo"],
   react: "📑",
   category: "anime",
-  desc: "Get detailed information about an anime by ID",
-  usage: ".animeinfo [id]",
+  desc: "Get detailed information about an anime by title or ID",
+  usage: ".animeinfo [title|id]",
   noPrefix: false,
 }, async (conn, mek, m, { from, q, reply }) => {
   try {
-    if (!q) return reply("Yo! Give me an anime ID. Usage: .animeinfo 20");
+    if (!q) return reply("Yo! Give me an anime ID or title. Usage: .animeinfo 20 or .animeinfo naruto");
 
-    const url = `https://apis.davidcyril.name.ng/anime/info?id=${q}`;
-    const { data } = await axios.get(url);
+    const animeId = await resolveAnimeId(q);
+    if (!animeId) {
+      return reply("❌ *Anime not found.* Try a different title.");
+    }
 
-    if (!data.success) {
+    const url = `${BASE}/anime/${animeId}`;
+    const response = await axios.get(url);
+    const anime = response.data?.data;
+
+    if (!anime) {
       return reply("❌ *Anime ID not found.* Check the ID and try again.");
     }
+    const genres = anime.genres?.map(g => g.name).join(", ") || "N/A";
+    const studios = anime.studios?.map(s => s.name).join(", ") || "N/A";
+    const aired = anime.aired?.string || "N/A";
+    const imageUrl = anime.images?.jpg?.image_url || anime.images?.webp?.image_url;
 
     const txt = `
 ╭━═『 *ANIME DETAILS* 』═━╮
-┃ 🏷️ *Title:* ${data.title}
-┃ 🇯🇵 *Japanese:* ${data.title_japanese}
-┃ 🆔 *ID:* ${data.id}
+┃ 🏷️ *Title:* ${anime.title}
+┃ 🇯🇵 *Japanese:* ${anime.title_japanese || "N/A"}
+┃ 🆔 *ID:* ${anime.mal_id}
 ╰━━━━━━━━━━━━━━━━━━╯
 
-⭐ *Score:* ${data.score}
-📺 *Type:* ${data.type} | *Source:* ${data.source}
-📂 *Episodes:* ${data.episodes}
-📊 *Status:* ${data.status}
-📅 *Aired:* ${data.aired}
-🕒 *Duration:* ${data.duration}
-🔞 *Rating:* ${data.rating}
-🎭 *Genres:* ${data.genres.join(", ")}
-🏢 *Studios:* ${data.studios.join(", ")}
+⭐ *Score:* ${anime.score ?? "N/A"}
+📺 *Type:* ${anime.type || "N/A"} | *Source:* ${anime.source || "N/A"}
+📂 *Episodes:* ${anime.episodes ?? "N/A"}
+📊 *Status:* ${anime.status || "N/A"}
+📅 *Aired:* ${aired}
+🕒 *Duration:* ${anime.duration || "N/A"}
+🔞 *Rating:* ${anime.rating || "N/A"}
+🎭 *Genres:* ${genres}
+🏢 *Studios:* ${studios}
 
 📝 *SYNOPSIS:*
-${data.synopsis.substring(0, 500)}...
+${anime.synopsis ? anime.synopsis.substring(0, 500) : "N/A"}...
 
 🚀 *${config.BOT_NAME}*
 `.trim();
 
     await conn.sendMessage(from, {
-      image: { url: data.image },
+      image: { url: imageUrl },
       caption: txt,
       contextInfo: getContext({ title: "Anime Intel Core", body: "Detailed breakdown retrieved" })
     }, { quoted: mek });
@@ -110,33 +133,35 @@ cmd({
   alias: ["eps"],
   react: "🎬",
   category: "anime",
-  desc: "Get episode list for an anime",
-  usage: ".animeeps [id]",
+  desc: "Get episode list for an anime by title or ID",
+  usage: ".animeeps [title|id]",
   noPrefix: false,
 }, async (conn, mek, m, { from, q, reply }) => {
   try {
-    if (!q) return reply("Yo! Provide an anime ID. Usage: .eps 20");
+    if (!q) return reply("Yo! Provide an anime name or ID. Usage: .eps naruto");
 
-    const url = `https://apis.davidcyril.name.ng/anime/episodes?id=${q}`;
+    const animeId = await resolveAnimeId(q);
+    if (!animeId) return reply("❌ *Anime not found.* Try a different title.");
+
+    const url = `${BASE}/anime/${animeId}/episodes?limit=50`;
     const { data } = await axios.get(url);
 
-    if (!data.success || !data.episodes.length) {
+    if (!data.data || !data.data.length) {
       return reply("❌ *No episodes found.*");
     }
 
-    let txt = `╭━═『 *EPISODE LIST* 』━╮\n┃ 🆔 *Anime ID:* ${data.id}\n╰━━━━━━━━━━━━━━━╯\n\n`;
+    let txt = `╭━═『 *EPISODE LIST* 』━╮\n┃ 🆔 *Anime ID:* ${animeId}\n╰━━━━━━━━━━━━━━━╯\n\n`;
 
-    data.episodes.slice(0, 30).forEach(ep => {
-      txt += `*EP ${ep.number}:* ${ep.title}\n`;
+    data.data.slice(0, 50).forEach(ep => {
+      txt += `*EP ${ep.mal_id}:* ${ep.title || "Untitled"}\n`;
       if (ep.filler) txt += `⚠️ *Filler*\n`;
       txt += `──────────────\n`;
     });
 
-    if (data.episodes.length > 30) txt += `\n*...and ${data.episodes.length - 30} more episodes.*`;
-    
+    if (data.data.length > 50) txt += `\n*...and ${data.data.length - 50} more episodes.*`;
     txt += `\n🚀 *${config.BOT_NAME}*`;
 
-    await reply(txt, { title: "Episode Retrieval", body: `${data.episodes.length} episodes found` });
+    await reply(txt, { title: "Episode Retrieval", body: `${data.data.length} episodes found` });
 
   } catch (err) {
     console.error("ANIME EPS ERROR:", err);
@@ -150,32 +175,37 @@ cmd({
   alias: ["chars"],
   react: "👤",
   category: "anime",
-  desc: "Get character list for an anime",
-  usage: ".chars [id]",
+  desc: "Get character list for an anime by title or ID",
+  usage: ".chars [title|id]",
   noPrefix: false,
 }, async (conn, mek, m, { from, q, reply }) => {
   try {
-    if (!q) return reply("Yo! Provide an anime ID. Usage: .chars 20");
+    if (!q) return reply("Yo! Provide an anime name or ID. Usage: .chars naruto");
 
-    const url = `https://apis.davidcyril.name.ng/anime/characters?id=${q}`;
+    const animeId = await resolveAnimeId(q);
+    if (!animeId) return reply("❌ *Anime not found.* Try a different title.");
+
+    const url = `${BASE}/anime/${animeId}/characters`;
     const { data } = await axios.get(url);
 
-    if (!data.success || !data.characters.length) {
+    if (!data.data || !data.data.length) {
       return reply("❌ *No characters found.*");
     }
 
-    let txt = `╭━═『 *CHARACTERS* 』═━╮\n┃ 🆔 *Anime ID:* ${data.id}\n╰━━━━━━━━━━━━━━╯\n\n`;
+    let txt = `╭━═『 *CHARACTERS* 』═━╮\n┃ 🆔 *Anime ID:* ${animeId}\n╰━━━━━━━━━━━━━━╯\n\n`;
 
-    data.characters.slice(0, 15).forEach(char => {
-      txt += `*${char.name}* (${char.role})\n`;
-      txt += `🎙️ *VA:* ${char.voice_actor || "Unknown"}\n`;
+    data.data.slice(0, 15).forEach(char => {
+      const character = char.character || {};
+      const voiceActors = (char.voice_actors || []).map(va => `${va.person.name} [${va.language}]`).join(", ");
+      txt += `*${character.name || "Unknown"}* (${char.role || "N/A"})\n`;
+      txt += `🎙️ *VA:* ${voiceActors || "Unknown"}\n`;
       txt += `──────────────\n`;
     });
 
     txt += `\n🚀 *${config.BOT_NAME}*`;
 
     await conn.sendMessage(from, {
-      image: { url: data.characters[0].image },
+      image: { url: data.data[0]?.character?.images?.jpg?.image_url || data.data[0]?.character?.images?.webp?.image_url },
       caption: txt,
       contextInfo: getContext({ title: "Character Database", body: "Casting details ready" })
     }, { quoted: mek });
@@ -197,23 +227,23 @@ cmd({
   noPrefix: false,
 }, async (conn, mek, m, { from, reply }) => {
   try {
-    const url = `https://apis.davidcyril.name.ng/anime/top?limit=10&filter=airing`;
+    const url = `${BASE}/top/anime?filter=airing&limit=10`;
     const { data } = await axios.get(url);
 
-    if (!data.success) return reply("❌ Failed to fetch top anime.");
+    if (!data.data || !data.data.length) return reply("❌ Failed to fetch top anime.");
 
     let txt = `╭━═『 *TOP AIRING* 』━╮\n┃ 📅 *Mode:* Global Ranking\n╰━━━━━━━━━━━━━╯\n\n`;
 
-    data.results.forEach((anime, i) => {
+    data.data.forEach((anime, i) => {
       txt += `*${i + 1}. [${anime.rank}] ${anime.title}*\n`;
-      txt += `⭐ *Score:* ${anime.score} | 🆔: ${anime.id}\n`;
+      txt += `⭐ *Score:* ${anime.score ?? "N/A"} | 🆔: ${anime.mal_id}\n`;
       txt += `──────────────\n`;
     });
 
     txt += `\n🚀 *${config.BOT_NAME} — Keeping it cool.*`;
 
     await conn.sendMessage(from, {
-      image: { url: data.results[0].image },
+      image: { url: data.data[0]?.images?.jpg?.image_url || data.data[0]?.images?.webp?.image_url },
       caption: txt,
       contextInfo: getContext({ title: "Global Top Ranking", body: "The best shows right now" })
     }, { quoted: mek });
@@ -235,17 +265,17 @@ cmd({
   noPrefix: false,
 }, async (conn, mek, m, { from, q, reply }) => {
   try {
-    const day = q.toLowerCase() || "";
-    const url = `https://apis.davidcyril.name.ng/anime/schedule${day ? `?day=${day}` : ""}`;
+    const day = q ? q.toLowerCase() : "";
+    const url = `${BASE}/schedules${day ? `?filter=${day}` : ""}`;
     const { data } = await axios.get(url);
 
-    if (!data.success) return reply("❌ Failed to fetch schedule.");
+    if (!data.data || !data.data.length) return reply("❌ Failed to fetch schedule.");
 
-    let txt = `╭━═『 *SCHEDULE* 』━╮\n┃ 📅 *Day:* ${data.day || "All Week"}\n╰━━━━━━━━━━━━╯\n\n`;
+    let txt = `╭━═『 *SCHEDULE* 』━╮\n┃ 📅 *Day:* ${day || "All Week"}\n╰━━━━━━━━━━━━╯\n\n`;
 
-    data.results.slice(0, 15).forEach(anime => {
-      txt += `• *${anime.title}*\n`;
-      txt += `⭐ *Score:* ${anime.score || "N/A"} | 🆔: ${anime.id}\n`;
+    data.data.slice(0, 15).forEach(anime => {
+      txt += `• *${anime.title}* (${anime.broadcast?.day || "TBA"} ${anime.broadcast?.time || ""})\n`;
+      txt += `⭐ *Score:* ${anime.score ?? "N/A"} | 🆔: ${anime.mal_id}\n`;
       txt += `──────────────\n`;
     });
 
@@ -270,23 +300,23 @@ cmd({
   noPrefix: false,
 }, async (conn, mek, m, { from, reply }) => {
   try {
-    const url = `https://apis.davidcyril.name.ng/anime/trending?limit=10`;
+    const url = `${BASE}/top/anime?filter=bypopularity&limit=10`;
     const { data } = await axios.get(url);
 
-    if (!data.success) return reply("❌ Failed to fetch trending anime.");
+    if (!data.data || !data.data.length) return reply("❌ Failed to fetch trending anime.");
 
-    let txt = `╭━═『 *TRENDING NOW* 』━╮\n┃ 🔥 *Hot:* Most watched today\n╰━━━━━━━━━━━━━━━╯\n\n`;
+    let txt = `╭━═『 *TRENDING NOW* 』━╮\n┃ 🔥 *Hot:* Most popular anime\n╰━━━━━━━━━━━━━━━╯\n\n`;
 
-    data.results.forEach((anime, i) => {
-      txt += `*${i + 1}. ${anime.title_english || anime.title}*\n`;
-      txt += `⭐ *Score:* ${anime.score}% | 🆔: ${anime.id}\n`;
+    data.data.forEach((anime, i) => {
+      txt += `*${i + 1}. ${anime.title}*\n`;
+      txt += `⭐ *Score:* ${anime.score ?? "N/A"} | 🆔: ${anime.mal_id}\n`;
       txt += `──────────────\n`;
     });
 
     txt += `\n🚀 *${config.BOT_NAME}*`;
 
     await conn.sendMessage(from, {
-      image: { url: data.results[0].image },
+      image: { url: data.data[0]?.images?.jpg?.image_url || data.data[0]?.images?.webp?.image_url },
       caption: txt,
       contextInfo: getContext({ title: "Trending Intelligence", body: "What the streets are watching" })
     }, { quoted: mek });
