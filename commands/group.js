@@ -1082,25 +1082,6 @@ cmd(
     if (!requireAdmin(isAdmin, reply)) return;
     if (!requireBotAdmin(isBotAdmin, reply)) return;
 
-    // MANUAL IMPLEMENTATION FOR OFFICIAL BAILEYS
-    // We send a status to status@broadcast but restrict it to this group only.
-    const statusRecipients = [from]; // Send to current group
-
-    if (!q) {
-      return reply(
-        "📸 *Group Status Sender*\n\n" +
-        "*Usage:*\n" +
-        "`.gstatus image <url> [caption]`\n" +
-        "`.gstatus video <url> [caption]`\n" +
-        "`.gstatus text <message>`\n" +
-        "`.gstatus audio <url>`\n\n" +
-        "*Or reply to media:*\n" +
-        "`.gstatus image` (reply to image)\n" +
-        "`.gstatus video` (reply to video)\n" +
-        "`.gstatus audio` (reply to audio/voice)"
-      );
-    }
-
     let type = (args[0] || "").toLowerCase();
 
     // Support for ".gstatus add text ..." pattern
@@ -1109,17 +1090,81 @@ cmd(
       type = (args[0] || "").toLowerCase();
     }
 
-    const validTypes = ["image", "video", "text", "audio"];
-
-    if (!validTypes.includes(type)) {
-      return reply("⚠️ Invalid type. Use: image, video, text, audio");
+    function unwrapMessage(message) {
+      if (!message) return null;
+      if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+      if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+      if (message.viewOnceMessageV2Extension?.message) return unwrapMessage(message.viewOnceMessageV2Extension.message);
+      if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+      if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+      return message;
     }
 
+    const currentMsg = unwrapMessage(mek.message);
+    const hasQuotedImage = quoted && (quoted.type === "imageMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/")));
+    const hasQuotedVideo = quoted && (quoted.type === "videoMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/")));
+    const hasQuotedAudio = quoted && (quoted.type === "audioMessage" || quoted.type === "pttMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/")));
+    const hasQuotedText = quoted && (quoted.type === "conversation" || quoted.type === "extendedTextMessage");
+
+    const hasCurrentImage = !!currentMsg?.imageMessage;
+    const hasCurrentVideo = !!currentMsg?.videoMessage;
+    const hasCurrentAudio = !!currentMsg?.audioMessage;
+
+    let buffer = null;
+    let caption = "";
+    let detectedType = null;
+
     try {
-      let payload = {};
+      if (hasQuotedImage || hasQuotedVideo || hasQuotedAudio) {
+        buffer = await quoted.download();
+        detectedType = hasQuotedImage ? "image" : hasQuotedVideo ? "video" : "audio";
+        caption = q.trim();
+        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
+          caption = args.slice(1).join(" ").trim();
+        }
+      } else if (hasCurrentImage || hasCurrentVideo || hasCurrentAudio) {
+        buffer = await downloadMediaMessage(mek, "buffer", {});
+        detectedType = hasCurrentImage ? "image" : hasCurrentVideo ? "video" : "audio";
+        caption = q.trim();
+        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
+          caption = args.slice(1).join(" ").trim();
+        }
+      }
+
+      if (detectedType) {
+        type = detectedType;
+      }
+
+      if (!type && hasQuotedText) {
+        type = "text";
+      }
+
+      const validTypes = ["image", "video", "text", "audio"];
+
+      if (!validTypes.includes(type)) {
+        return reply(
+          "📸 *Group Status Sender*\n\n" +
+          "*Usage:*\n" +
+          "`.gstatus image <url> [caption]`\n" +
+          "`.gstatus video <url> [caption]`\n" +
+          "`.gstatus text <message>`\n" +
+          "`.gstatus audio <url>`\n\n" +
+          "*Or reply to media:*\n" +
+          "`.gstatus image` (reply to image)\n" +
+          "`.gstatus video` (reply to video)\n" +
+          "`.gstatus audio` (reply to audio/voice)\n\n" +
+          "*Or send directly with caption:*\n" +
+          "Send image/video/audio with command `.gstatus [caption]`"
+        );
+      }
 
       if (type === "text") {
-        const text = args.slice(1).join(" ").trim();
+        let text = "";
+        if (hasQuotedText) {
+          text = quoted.body || quoted.msg || "";
+        } else {
+          text = args[0]?.toLowerCase() === "text" ? args.slice(1).join(" ").trim() : q.trim();
+        }
         if (!text) return reply("⚠️ Provide text content.\nUsage: `.gstatus text Hello world!`");
         
         const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
@@ -1146,13 +1191,9 @@ cmd(
       }
 
       else if (type === "image") {
-        let buffer, caption;
-        if (quoted && quoted.type === "imageMessage") {
-          buffer = await quoted.download();
-          caption = args.slice(1).join(" ").trim();
-        } else {
+        if (!buffer) {
           const imageUrl = args[1];
-          if (!imageUrl) return reply("⚠️ Provide image URL or reply to an image.");
+          if (!imageUrl) return reply("⚠️ Provide image URL or reply to/attach an image.");
           buffer = { url: imageUrl };
           caption = args.slice(2).join(" ").trim();
         }
@@ -1181,13 +1222,9 @@ cmd(
       }
 
       else if (type === "video") {
-        let buffer, caption;
-        if (quoted && quoted.type === "videoMessage") {
-          buffer = await quoted.download();
-          caption = args.slice(1).join(" ").trim();
-        } else {
+        if (!buffer) {
           const videoUrl = args[1];
-          if (!videoUrl) return reply("⚠️ Provide video URL or reply to a video.");
+          if (!videoUrl) return reply("⚠️ Provide video URL or reply to/attach a video.");
           buffer = { url: videoUrl };
           caption = args.slice(2).join(" ").trim();
         }
@@ -1216,12 +1253,9 @@ cmd(
       }
 
       else if (type === "audio") {
-        let buffer;
-        if (quoted && (quoted.type === "audioMessage" || quoted.type === "pttMessage")) {
-          buffer = await quoted.download();
-        } else {
+        if (!buffer) {
           const audioUrl = args[1];
-          if (!audioUrl) return reply("⚠️ Provide audio URL or reply to an audio message.");
+          if (!audioUrl) return reply("⚠️ Provide audio URL or reply to/attach an audio message.");
           buffer = { url: audioUrl };
         }
 
