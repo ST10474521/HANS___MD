@@ -1,24 +1,24 @@
 const { cmd } = require("../command");
 const { getContext } = require("../lib/newsletter");
-const axios = require("axios");
+const { callPollinationsAI, MODELS } = require("../lib/pollinations");
 const config = require("../config");
 
-// Helper to handle AI responses
-const handleAI = async (url, reply, modelName, thumb, conn, mek) => {
+// Helper to handle AI responses uniformly
+const handleAI = async (message, modelKey, modelName, thumb, conn, mek, reply) => {
   try {
     // React while waiting
     if (conn && mek) {
       await conn.sendMessage(mek.key.remoteJid, { react: { text: "⏳", key: mek.key } });
     }
 
-    const { data } = await axios.get(url);
-    const response = data.response || data.message || data.result || data.text;
-    
+    const model = MODELS[modelKey] || "openai";
+    const response = await callPollinationsAI(message, model, null, 1000, 0.7);
+
     if (!response) {
       return reply(`❌ *Error:* No response generated from ${modelName}.`);
     }
 
-    const caption = `╭━═『 *${modelName.toUpperCase()}* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Keeping it sharp.* 😎`;
+    const caption = `╭━═『 *${modelName.toUpperCase()}* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Powered by Pollinations.* 🚀`;
 
     await reply(caption, { 
       title: `${modelName} Assistant`, 
@@ -31,38 +31,115 @@ const handleAI = async (url, reply, modelName, thumb, conn, mek) => {
       await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
     }
   } catch (err) {
-    console.error(`AI ERROR [${modelName}]:`, err);
+    console.error(`AI ERROR [${modelName}]:`, err.message);
     reply(`❌ *Failed to contact ${modelName}.* Try again later.`);
   }
 };
 
-// --- CHATBOTS ---
+// --- MAIN AI CHATBOTS ---
 
 cmd({
   pattern: "ai",
   alias: ["chatbot", "ask"],
   react: "🤖",
   category: "ai",
-  desc: "Chat with an AI assistant",
+  desc: "Chat with OpenAI GPT-5.4 Nano",
   usage: ".ai [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/chatbot?query=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "AI Chatbot", null, conn, mek);
+  const query = q || "Hello, how are you?";
+  await handleAI(query, "openai", "GPT-5.4 Nano", null, conn, mek, reply);
+});
+
+cmd({
+  pattern: "aifast",
+  alias: ["fast"],
+  react: "⚡",
+  category: "ai",
+  desc: "Chat with OpenAI GPT-5 Nano (Ultra Fast)",
+  usage: ".aifast [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "fast", "GPT-5 Nano (Fast)", null, conn, mek, reply);
+});
+
+cmd({
+  pattern: "ailarge",
+  alias: ["large"],
+  react: "🧠",
+  category: "ai",
+  desc: "Chat with OpenAI GPT-5.4 (Most Powerful)",
+  usage: ".ailarge [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "large", "GPT-5.4 Large", null, conn, mek, reply);
+});
+
+cmd({
+  pattern: "mistral",
+  react: "🌪️",
+  category: "ai",
+  desc: "Chat with Mistral Small 3.2",
+  usage: ".mistral [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "mistral", "Mistral Small 3.2", null, conn, mek, reply);
+});
+
+cmd({
+  pattern: "qwen",
+  alias: ["coder"],
+  react: "💻",
+  category: "ai",
+  desc: "Chat with Qwen3 Coder 30B (Code Expert)",
+  usage: ".qwen [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "qwen", "Qwen3 Coder 30B", null, conn, mek, reply);
 });
 
 cmd({
   pattern: "gemini",
   react: "♊",
   category: "ai",
-  desc: "Chat with Google Gemini",
+  desc: "Chat with Google Gemini 2.5 Flash Lite",
   usage: ".gemini [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/gemini?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Gemini", "https://i.ibb.co/YyY2QJQ/gemini.png", conn, mek);
+  const query = q || "Hello";
+  await handleAI(query, "gemini", "Gemini 2.5 Flash", "https://i.ibb.co/YyY2QJQ/gemini.png", conn, mek, reply);
+});
+
+// --- ALIASES FOR COMMON MODELS ---
+
+cmd({
+  pattern: "gpt",
+  alias: ["gpt5"],
+  react: "🚀",
+  category: "ai",
+  desc: "Chat with GPT-5.4 (Default OpenAI)",
+  usage: ".gpt [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "openai", "GPT-5.4", null, conn, mek, reply);
+});
+
+cmd({
+  pattern: "gpt4",
+  alias: ["gpt4o"],
+  react: "🤖",
+  category: "ai",
+  desc: "Chat with GPT-5.4 Large",
+  usage: ".gpt4 [query]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  const query = q || "Hello";
+  await handleAI(query, "large", "GPT-5.4 Large", null, conn, mek, reply);
 });
 
 cmd({
@@ -70,13 +147,12 @@ cmd({
   alias: ["llama3"],
   react: "🦙",
   category: "ai",
-  desc: "Chat with Meta Llama 3",
+  desc: "Chat with Meta Llama (Mistral Backend)",
   usage: ".llama [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/llama3?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Llama 3", null, conn, mek);
+  const query = q || "Hello";
+  await handleAI(query, "mistral", "Llama (Mistral)", null, conn, mek, reply);
 });
 
 cmd({
@@ -84,27 +160,12 @@ cmd({
   alias: ["deepseekv3"],
   react: "🐳",
   category: "ai",
-  desc: "Chat with Deepseek V3",
+  desc: "Chat with Deepseek (Mistral Backend)",
   usage: ".deepseek [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/deepseek-v3?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Deepseek V3", null, conn, mek);
-});
-
-cmd({
-  pattern: "deepseekr1",
-  alias: ["r1"],
-  react: "🧠",
-  category: "ai",
-  desc: "Chat with Deepseek R1 (Thinking AI)",
-  usage: ".deepseekr1 [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/deepseek-r1?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Deepseek R1", null, conn, mek);
+  const query = q || "Hello";
+  await handleAI(query, "mistral", "Deepseek V3", null, conn, mek, reply);
 });
 
 cmd({
@@ -112,349 +173,292 @@ cmd({
   alias: ["metaai"],
   react: "♾️",
   category: "ai",
-  desc: "Chat with Meta AI",
+  desc: "Chat with Meta AI (Mistral Backend)",
   usage: ".meta [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/metaai?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Meta AI", null, conn, mek);
+  const query = q || "Hello";
+  await handleAI(query, "mistral", "Meta AI", null, conn, mek, reply);
 });
 
 cmd({
-  pattern: "gpt",
-  alias: ["gpt3"],
-  react: "🤖",
+  pattern: "code",
+  alias: ["code-ai", "codeai"],
+  react: "💻",
   category: "ai",
-  desc: "Chat with GPT-3",
-  usage: ".gpt [query]",
+  desc: "Chat with Code Expert (Qwen Coder)",
+  usage: ".code [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/gpt3?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "GPT-3", null, conn, mek);
+  const query = q || "Hello";
+  await handleAI(query, "qwen", "Qwen Code Expert", null, conn, mek, reply);
 });
 
+// --- THINKING/REASONING AI (Using Large Model) ---
+
 cmd({
-  pattern: "gpt4",
-  alias: ["gpt4o"],
-  react: "🚀",
+  pattern: "think",
+  alias: ["reasoning", "r1"],
+  react: "🧠",
   category: "ai",
-  desc: "Chat with GPT-4",
-  usage: ".gpt4 [query]",
+  desc: "Advanced reasoning with GPT-5.4 Large",
+  usage: ".think [query]",
   noPrefix: false,
 }, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const primaryUrl = `https://apis.davidcyril.name.ng/ai/gpt4?text=${encodeURIComponent(query)}`;
-  const fallbackUrl = `https://api.giftedtech.co.ke/api/ai/gpt4o?apikey=gifted&q=${encodeURIComponent(query)}`;
-
   try {
-    await handleAI(primaryUrl, reply, "GPT-4", null, conn, mek);
-  } catch (err) {
-    console.error("GPT4 PRIMARY FAILED, TRYING FALLBACK:", err.message);
-    try {
-      if (conn && mek) {
-        await conn.sendMessage(mek.key.remoteJid, { react: { text: "🔄", key: mek.key } });
-      }
-      const { data } = await axios.get(fallbackUrl);
-      const response = data.result || data.response || data.message || data.text;
-      if (!response) throw new Error("No response from fallback");
-      const caption = `╭━═『 *GPT-4O* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Keeping it sharp.* 😎`;
-      await reply(caption, {
-        title: "GPT-4O Assistant",
-        body: "Intelligence Retrieval Successful",
-        thumb: "https://i.ibb.co/DPFmfvcX/Chat-GPT-Image-Apr-24-2026-01-51-32-AM.png"
-      });
-      if (conn && mek) {
-        await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
-      }
-    } catch (fallbackErr) {
-      console.error("GPT4 FALLBACK FAILED:", fallbackErr);
-      reply(`❌ *Failed to contact GPT-4.* Try again later.`);
-    }
-  }
-});
-
-cmd({
-  pattern: "gpt4mini",
-  alias: ["4omini"],
-  react: "⚡",
-  category: "ai",
-  desc: "Chat with GPT-4o Mini",
-  usage: ".gpt4mini [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/gpt4omini?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "GPT-4o Mini", null, conn, mek);
-});
-
-cmd({
-  pattern: "gemma",
-  react: "💎",
-  category: "ai",
-  desc: "Chat with Google Gemma",
-  usage: ".gemma [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/gemma?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Gemma", null, conn, mek);
-});
-
-cmd({
-  pattern: "qvq",
-  react: "🔍",
-  category: "ai",
-  desc: "Chat with QVQ 72B",
-  usage: ".qvq [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/qvq?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "QVQ 72B", null, conn, mek);
-});
-
-cmd({
-  pattern: "deepseek67b",
-  alias: ["67b"],
-  react: "🪐",
-  category: "ai",
-  desc: "Chat with Deepseek LLM 67B",
-  usage: ".67b [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/deepseek-llm-67b-chat?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Deepseek-67B", null, conn, mek);
-});
-
-cmd({
-  pattern: "mixtral",
-  react: "🌪️",
-  category: "ai",
-  desc: "Chat with Mixtral",
-  usage: ".mixtral [query]",
-  noPrefix: false,
-}, async (conn, mek, m, { q, reply }) => {
-  const query = q || "Hi";
-  const url = `https://apis.davidcyril.name.ng/ai/mixtral?text=${encodeURIComponent(query)}`;
-  await handleAI(url, reply, "Mixtral", null, conn, mek);
-});
-
-// --- MUSIC GENERATOR ---
-
-cmd({
-  pattern: "aimusic",
-  alias: ["musicgen"],
-  react: "🎸",
-  category: "ai",
-  desc: "Generate music using AI",
-  usage: ".aimusic [prompt] | [title]",
-  noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
-  try {
-    if (!q) return reply("Usage: .aimusic LoFi chill beat | My Song");
+    if (!q) return reply("Usage: .think [complex query]");
     
-    const [prompt, title] = q.split("|").map(s => s.trim());
-    if (!prompt) return reply("❌ Please provide a prompt.");
-
-    await reply(`╭━═『 *GUITAR STRUMMING* 』━╮\n┃ 📡 *Mode:* Generating Audio...\n┃ ⏳ *Wait:* This takes a minute!\n╰━━━━━━━━━━━━━━━━╯`);
-
-    const url = `https://apis.davidcyril.name.ng/aimusic/generate?prompt=${encodeURIComponent(prompt)}&title=${encodeURIComponent(title || "AI Music")}`;
-    const { data } = await axios.get(url);
-
-    if (!data.success || !data.audio_url) {
-      return reply("❌ Failed to generate music. API might be busy.");
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "🤔", key: mek.key } });
     }
 
-    const caption = `╭━═ 『 *MUSIC READY* 』 ═━╮\n┃ 🎶 *Title:* ${title || "AI Music"}\n┃ ✍️ *Prompt:* ${prompt}\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Beats on demand.* 🎧`;
+    const response = await callPollinationsAI(q, MODELS.large, "You are an advanced reasoning AI. Provide detailed, step-by-step analysis.", 2000, 0.5);
 
-    await conn.sendMessage(from, {
-      audio: { url: data.audio_url },
-      mimetype: "audio/mpeg",
-      fileName: `${title || "AI Music"}.mp3`,
-      contextInfo: getContext({ title: "AI Music Generator", body: "Original soundtrack ready" })
-    }, { quoted: mek });
+    if (!response) {
+      return reply("❌ Failed to generate response.");
+    }
 
+    const caption = `╭━═『 *REASONING AI* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Deep thinking enabled.* 🧠`;
     await reply(caption);
 
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
   } catch (err) {
-    console.error("AI MUSIC ERROR:", err);
-    reply("❌ Error generating music.");
+    console.error("THINK ERROR:", err.message);
+    reply("❌ Reasoning failed.");
   }
 });
 
-// --- IMAGE GENERATORS ---
+// --- MULTI-TURN CONVERSATION (Future Enhancement) ---
 
 cmd({
-  pattern: "animagine",
-  alias: ["animegen", "anime"],
-  react: "🎨",
+  pattern: "aicontext",
+  alias: ["systemai"],
+  react: "📋",
   category: "ai",
-  desc: "Generate anime style images using AI",
-  usage: ".animagine [prompt]",
+  desc: "AI with custom system prompt",
+  usage: ".aicontext [system] | [query]",
   noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
+}, async (conn, mek, m, { q, reply }) => {
   try {
-    const query = q || "beautiful anime girl, cherry blossoms, sunset, detailed, 4k";
+    if (!q || !q.includes("|")) {
+      return reply("Usage: .aicontext [system prompt] | [query]");
+    }
+
+    const [systemPrompt, userMessage] = q.split("|").map(s => s.trim());
     
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "🎨", key: mek.key } });
-    await reply(`╭━═『 *ANIMAGINE* 』━╮\n┃ 📡 *Task:* Sketching Anime...\n┃ ⏳ *Status:* Rendering pixels\n╰━━━━━━━━━━━━━━━━╯`);
-
-    const url = `https://apis.davidcyril.name.ng/animagine?prompt=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(url);
-
-    if (!data.success || !data.cdn_url) {
-      return reply("❌ Failed to generate anime image.");
+    if (!systemPrompt || !userMessage) {
+      return reply("Please provide both system prompt and query.");
     }
 
-    await conn.sendMessage(from, {
-      image: { url: data.cdn_url },
-      caption: `╭━═ 『 *ANIME READY* 』 ═━╮\n┃ ✨ *Prompt:* ${query}\n╰━━━━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
-      contextInfo: getContext({ title: "Animagine AI", body: "Masterpiece rendered" })
-    }, { quoted: mek });
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "⏳", key: mek.key } });
+    }
 
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    const response = await callPollinationsAI(userMessage, MODELS.openai, systemPrompt, 1000, 0.7);
 
+    if (!response) {
+      return reply("❌ Failed to generate response.");
+    }
+
+    const caption = `╭━═『 *CUSTOM AI* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Context aware.* 📋`;
+    await reply(caption);
+
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
   } catch (err) {
-    console.error("ANIMAGINE ERROR:", err);
-    reply("❌ Error sketching your anime.");
+    console.error("AI CONTEXT ERROR:", err.message);
+    reply("❌ Failed to process with custom context.");
+  }
+});
+
+// --- TEXT-BASED GENERATORS ---
+
+cmd({
+  pattern: "story",
+  alias: ["writestory"],
+  react: "📖",
+  category: "ai",
+  desc: "Generate a creative story",
+  usage: ".story [topic]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  try {
+    const topic = q || "adventure";
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✍️", key: mek.key } });
+    }
+
+    const prompt = `Write a creative, engaging short story about: ${topic}. Make it 200-400 words.`;
+    const response = await callPollinationsAI(prompt, MODELS.openai, "You are a creative storyteller.", 1500, 0.8);
+
+    const caption = `╭━═『 *STORY TIME* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Written by AI.* 📖`;
+    await reply(caption);
+
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
+  } catch (err) {
+    console.error("STORY ERROR:", err.message);
+    reply("❌ Failed to generate story.");
   }
 });
 
 cmd({
-  pattern: "epicrealism",
-  alias: ["real", "photo"],
-  react: "📸",
+  pattern: "poem",
+  alias: ["writepoem"],
+  react: "🎭",
   category: "ai",
-  desc: "Generate photorealistic images using AI",
-  usage: ".epicrealism [prompt]",
+  desc: "Generate a poem",
+  usage: ".poem [topic]",
   noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
+}, async (conn, mek, m, { q, reply }) => {
   try {
-    const query = q || "photorealistic portrait of a warrior, intricate armor, dramatic lighting, 8k";
+    const topic = q || "love";
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✍️", key: mek.key } });
+    }
+
+    const prompt = `Write a beautiful, meaningful poem about: ${topic}. Make it 4-6 stanzas.`;
+    const response = await callPollinationsAI(prompt, MODELS.openai, "You are a talented poet.", 1000, 0.9);
+
+    const caption = `╭━═『 *POEM* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Poetry mode.* 🎭`;
+    await reply(caption);
+
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
+  } catch (err) {
+    console.error("POEM ERROR:", err.message);
+    reply("❌ Failed to generate poem.");
+  }
+});
+
+cmd({
+  pattern: "explain",
+  alias: ["eli5"],
+  react: "📚",
+  category: "ai",
+  desc: "Explain a concept simply",
+  usage: ".explain [concept]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  try {
+    if (!q) return reply("Usage: .explain [concept]");
     
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "📸", key: mek.key } });
-    await reply(`╭━═『 *EPIC REALISM* 』━╮\n┃ 📡 *Task:* Capturing Reality...\n┃ ⏳ *Status:* Processing 8K Image\n╰━━━━━━━━━━━━━━━━━╯`);
-
-    const url = `https://apis.davidcyril.name.ng/epicrealism?prompt=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(url);
-
-    if (!data.success || !data.result) {
-      return reply("❌ Failed to generate realistic image.");
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "🔍", key: mek.key } });
     }
 
-    await conn.sendMessage(from, {
-      image: { url: data.result },
-      caption: `╭━═ 『 *REALITY CAPTURED* 』 ═━╮\n┃ 🖼️ *Prompt:* ${query}\n╰━━━━━━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
-      contextInfo: getContext({ title: "Epic Realism AI", body: "Hyper-realistic render complete" })
-    }, { quoted: mek });
+    const prompt = `Explain "${q}" in simple terms that anyone can understand. Use analogies if helpful.`;
+    const response = await callPollinationsAI(prompt, MODELS.openai, "You are a great teacher who explains complex ideas simply.", 1000, 0.6);
 
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    const caption = `╭━═『 *EXPLANATION* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — ELI5 Mode.* 📚`;
+    await reply(caption);
 
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
   } catch (err) {
-    console.error("EPICREALISM ERROR:", err);
-    reply("❌ Error capturing reality.");
+    console.error("EXPLAIN ERROR:", err.message);
+    reply("❌ Failed to explain concept.");
   }
 });
 
 cmd({
-  pattern: "flux",
-  alias: ["fluxv2", "gen"],
-  react: "🌀",
+  pattern: "translate",
+  react: "🌍",
   category: "ai",
-  desc: "Generate high-quality images using Flux AI",
-  usage: ".flux [prompt]",
+  desc: "Translate text to another language",
+  usage: ".translate [lang] | [text]",
   noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
+}, async (conn, mek, m, { q, reply }) => {
   try {
-    const query = q || "cyberpunk city, neon lights, rain, futuristic, detailed";
+    if (!q || !q.includes("|")) {
+      return reply("Usage: .translate [language] | [text]\nExample: .translate spanish | Hello world");
+    }
+
+    const [lang, text] = q.split("|").map(s => s.trim());
     
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "🌀", key: mek.key } });
-    await reply(`╭━═『 *FLUX AI* 』━╮\n┃ 📡 *Task:* Flowing Pixels...\n┃ ⏳ *Status:* Generating Art\n╰━━━━━━━━━━━━━━━━╯`);
-
-    const url = `https://apis.davidcyril.name.ng/fluxv2?prompt=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(url);
-
-    if (!data.success || !data.result) {
-      return reply("❌ Failed to generate Flux image.");
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "🌐", key: mek.key } });
     }
 
-    await conn.sendMessage(from, {
-      image: { url: data.result },
-      caption: `╭━═ 『 *FLUX RENDER* 』 ═━╮\n┃ 🎨 *Prompt:* ${query}\n╰━━━━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
-      contextInfo: getContext({ title: "Flux V2 AI", body: "High-fidelity generation successful" })
-    }, { quoted: mek });
+    const prompt = `Translate the following text to ${lang}:\n\n${text}`;
+    const response = await callPollinationsAI(prompt, MODELS.openai, "You are a professional translator.", 500, 0.3);
 
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    const caption = `╭━═『 *TRANSLATION* 』═━╮\n*To ${lang}:*\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Global voice.* 🌍`;
+    await reply(caption);
 
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
   } catch (err) {
-    console.error("FLUX ERROR:", err);
-    reply("❌ Error with Flux generation.");
-  }
-});
-
-// --- GIFTEDTECH IMAGE GENERATORS ---
-
-cmd({
-  pattern: "magicstudio",
-  alias: ["magic", "ms"],
-  react: "🪄",
-  category: "ai",
-  desc: "Generate image using MagicStudio AI",
-  usage: ".magicstudio [prompt]",
-  noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
-  try {
-    const query = q || "a beautiful sunset over mountains";
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "🪄", key: mek.key } });
-    await reply(`╭━═『 *MAGIC STUDIO* 』━╮\n┃ 📡 *Task:* Summoning Magic...\n┃ ⏳ *Status:* Rendering Image\n╰━━━━━━━━━━━━━━━━╯`);
-
-    const url = `https://api.giftedtech.co.ke/api/ai/magicstudio?apikey=gifted&prompt=${encodeURIComponent(query)}`;
-    await conn.sendMessage(from, {
-      image: { url: url },
-      caption: `╭━═ 『 *MAGIC READY* 』 ═━╮\n┃ 🎨 *Prompt:* ${query}\n╰━━━━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
-      contextInfo: getContext({ title: "MagicStudio AI", body: "Image rendered successfully" })
-    }, { quoted: mek });
-
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
-  } catch (err) {
-    console.error("MAGICSTUDIO ERROR:", err);
-    reply("❌ MagicStudio generation failed.");
+    console.error("TRANSLATE ERROR:", err.message);
+    reply("❌ Failed to translate.");
   }
 });
 
 cmd({
-  pattern: "txt2img",
-  alias: ["t2i", "text2image"],
-  react: "🖼️",
+  pattern: "brainstorm",
+  alias: ["ideas"],
+  react: "💡",
   category: "ai",
-  desc: "Generate image from text using txt2img AI",
-  usage: ".txt2img [prompt]",
+  desc: "Brainstorm ideas on a topic",
+  usage: ".brainstorm [topic]",
   noPrefix: false,
-}, async (conn, mek, m, { from, q, reply }) => {
+}, async (conn, mek, m, { q, reply }) => {
   try {
-    const query = q || "A beautiful sunset over mountains";
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "🖼️", key: mek.key } });
-    await reply(`╭━═『 *TXT2IMG* 』━╮\n┃ 📡 *Task:* Generating Image...\n┃ ⏳ *Status:* AI Rendering\n╰━━━━━━━━━━━━━━━━╯`);
-
-    const apiUrl = `https://api.giftedtech.co.ke/api/ai/txt2img?apikey=gifted&prompt=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(apiUrl);
-
-    if (!data.success || !data.result?.url) {
-      return reply("❌ Failed to generate image via txt2img.");
+    if (!q) return reply("Usage: .brainstorm [topic]");
+    
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "🧠", key: mek.key } });
     }
 
-    await conn.sendMessage(from, {
-      image: { url: data.result.url },
-      caption: `╭━═ 『 *IMAGE READY* 』 ═━╮\n┃ 🎨 *Prompt:* ${data.result.prompt || query}\n╰━━━━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
-      contextInfo: getContext({ title: "Txt2Img AI", body: "Image generated successfully" })
-    }, { quoted: mek });
+    const prompt = `Generate 5-10 creative ideas or solutions related to: ${q}. Be innovative and practical.`;
+    const response = await callPollinationsAI(prompt, MODELS.large, "You are a creative brainstorming expert.", 1200, 0.9);
 
-    await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    const caption = `╭━═『 *BRAINSTORM* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Creative sparks.* 💡`;
+    await reply(caption);
+
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
   } catch (err) {
-    console.error("TXT2IMG ERROR:", err);
-    reply("❌ txt2img generation failed.");
+    console.error("BRAINSTORM ERROR:", err.message);
+    reply("❌ Failed to brainstorm.");
+  }
+});
+
+cmd({
+  pattern: "summarize",
+  alias: ["tl;dr"],
+  react: "📄",
+  category: "ai",
+  desc: "Summarize long text",
+  usage: ".summarize [text]",
+  noPrefix: false,
+}, async (conn, mek, m, { q, reply }) => {
+  try {
+    if (!q) return reply("Usage: .summarize [long text]");
+    
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "📖", key: mek.key } });
+    }
+
+    const prompt = `Summarize the following text in 2-3 sentences:\n\n${q}`;
+    const response = await callPollinationsAI(prompt, MODELS.openai, "You are a master summarizer.", 500, 0.5);
+
+    const caption = `╭━═『 *SUMMARY* 』═━╮\n\n${response.trim()}\n\n╰━━━━━━━━━━━━━━━━━━╯\n\n*HANS MD — Condensed knowledge.* 📄`;
+    await reply(caption);
+
+    if (conn && mek) {
+      await conn.sendMessage(mek.key.remoteJid, { react: { text: "✅", key: mek.key } });
+    }
+  } catch (err) {
+    console.error("SUMMARIZE ERROR:", err.message);
+    reply("❌ Failed to summarize.");
   }
 });
