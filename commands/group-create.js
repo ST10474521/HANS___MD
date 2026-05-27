@@ -462,24 +462,39 @@ cmd(
   {
     pattern: "join",
     alias: ["acceptinvite"],
-    react: "",
+    react: "🔗",
     category: "group",
-    desc: "Join group by invite code",
-    usage: ".join invite-code-here",
+    desc: "Join group by invite code or link",
+    usage: ".join invite-code-or-full-link",
     noPrefix: false,
   },
-  async (conn, mek, m, { from, reply, args, isOwner, isSudo }) => {
+  async (conn, mek, m, { reply, args, isOwner, isSudo }) => {
     if (!isOwner && !isSudo) return reply("Only owners and sudo can join groups via invite.");
-    
-    const inviteCode = args[0];
-    if (!inviteCode) return reply("Please provide an invite code.\nUsage: .join invite-code-here");
-    
+
+    const raw = args.join("").replace("https://chat.whatsapp.com/", "").trim();
+    if (!raw) return reply("Please provide an invite code or link.\nUsage: .join invite-code-here");
+
     try {
-      const groupId = await conn.groupAcceptInvite(inviteCode);
-      await reply(`Successfully joined group: ${groupId}`);
+      const info = await conn.groupGetInviteInfo(raw);
+      await reply(
+        `🔍 *Group Preview*\n` +
+        `📛 Name: ${info.subject}\n` +
+        `👥 Members: ${info.participants.length}\n` +
+        `📝 Desc: ${info.desc || "No description"}\n\n` +
+        `⏳ Joining...`
+      );
+
+      const groupId = await conn.groupAcceptInvite(raw);
+      const meta = await conn.groupMetadata(groupId);
+      await reply(`✅ Successfully joined *${meta.subject}*\n👥 ${meta.participants.length} members`);
     } catch (error) {
       console.error("Join group error:", error);
-      await reply(`Failed to join group: ${error.message}`);
+      const msg = error.message?.includes("not-authorized")
+        ? "Invalid or expired invite link."
+        : error.message?.includes("already-exists")
+        ? "Bot is already in this group."
+        : `Failed to join group: ${error.message}`;
+      await reply(`❌ ${msg}`);
     }
   }
 );

@@ -2,10 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { cmd } = require("../command");
 const config = require("../config");
-const { exec } = require("child_process");
-const axios = require("axios");
 const { getLatestVersion, getChangelog, getAllFeatures, CURRENT_VERSION } = require("../lib/version");
 const { getContext } = require("../lib/newsletter");
+const { runUpdate, getUpdateCheck, restartBot } = require("../lib/updater");
 
 // Helper to format runtime
 function runtime(seconds) {
@@ -81,94 +80,109 @@ cmd(
     pattern: "update",
     alias: ["up"],
     react: "🔄",
-    desc: "Update the bot to the latest version from GitHub.",
+    desc: "Update bot from GitHub (sync, npm install, PM2 restart). Use: .update | .update force | .update check",
     category: "system",
     filename: __filename,
   },
-  async (conn, mek, m, { reply, isOwner }) => {
+  async (conn, mek, m, { reply, isOwner, q, prefix }) => {
     if (!isOwner) return reply("❌ This command is for my OWNER only.");
 
-    try {
-      const latestVersion = await getLatestVersion();
-      const isUpToDate = CURRENT_VERSION === latestVersion;
+    const mode = (q || "").trim().toLowerCase();
+    const isForce = mode === "force" || mode === "sync";
+    const isCheck = mode === "check" || mode === "status";
 
-      if (isUpToDate) {
-        return await reply(`✅ *HANS-MD is already up to date (v${CURRENT_VERSION})*`);
+    try {
+      if (isCheck) {
+        const info = await getUpdateCheck(CURRENT_VERSION);
+        let msg = `╭━═『 *UPDATE CHECK* 』═━╮\n`;
+        msg += `┃ 📦 *Local:* v${info.localVersion}\n`;
+        msg += `┃ 🌐 *Remote:* v${info.remoteVersion || "?"}\n`;
+        msg += `┃ 📂 *Deploy:* ${info.isGitRepo ? "Git" : "Hot-swap"}\n`;
+
+        if (info.isGitRepo) {
+          msg += `┃ 🌿 *Branch:* ${info.branch || "main"}\n`;
+          msg += `┃ 🔖 *Local commit:* ${info.localCommit || "?"}\n`;
+          msg += `┃ 🔖 *Remote commit:* ${info.remoteCommit || "?"}\n`;
+          msg += `┃ ⬇️ *Commits behind:* ${info.commitsBehind ?? "?"}\n`;
+        } else {
+          msg += `┃ 📁 *Sync files:* ${info.hotSwapFileCount ?? "?"}\n`;
+        }
+
+        const needsUpdate =
+          info.remoteVersion !== info.localVersion ||
+          (info.commitsBehind && info.commitsBehind > 0);
+
+        msg += `┃ 📢 *Status:* ${needsUpdate ? "Update recommended" : "Looks up to date"}\n`;
+        msg += `╰━━━━━━━━━━━━━━━━━━━━━━━╯\n\n`;
+        msg += `• \`${prefix}update\` — pull/sync + install + restart\n`;
+        msg += `• \`${prefix}update force\` — sync even if version matches\n`;
+        msg += `• \`${prefix}restart\` — restart only`;
+
+        return await reply(msg, { title: "Update Check", body: "No changes applied" });
       }
 
-      await reply(`🔄 *Update available: v${CURRENT_VERSION} ➔ v${latestVersion}*\n\nChecking deployment type...`);
+      const latestVersion = await getLatestVersion();
 
-      const isGitRepo = fs.existsSync(path.join(process.cwd(), ".git"));
-
-      if (isGitRepo) {
-        exec("git pull", async (err, stdout, stderr) => {
-          if (err) {
-            console.error(err);
-            return reply(`❌ *Git Pull Failed:*\n\n${stderr || err.message}`);
-          }
-
-          if (stdout.includes("Already up to date.")) {
-            return reply("✅ Bot is already up to date!");
-          }
-
-          await reply(`✅ *Git Update Successful:* (v${latestVersion})\n\n${stdout}\n\n*Restarting bot via PM2...*`, {
-            title: "System Update",
-            body: "Core files synchronized"
-          });
-
-          setTimeout(() => process.exit(0), 2500);
-        });
-      } else {
-        // Non-git deployment — hot-swap key files from GitHub raw
-        await reply(`⚠️ *Non-git deployment detected.*\n_Fetching latest files directly from GitHub..._`);
-
-        const repoRaw = "https://raw.githubusercontent.com/HaroldMth/HANS___MD/main";
-        const filesToUpdate = [
-          "lib/version.js",
-          "package.json",
-          "commands/ai.js",
-          "commands/fun.js",
-          "commands/tools.js",
-          "commands/download.js",
-          "commands/system.js",
-          "lib/handler.js",
-          "index.js"
-        ];
-
-        let updated = 0;
-        let failed = [];
-
-        for (const file of filesToUpdate) {
-          try {
-            const url = `${repoRaw}/${file}`;
-            const { data } = await axios.get(url, { timeout: 15000, responseType: "text" });
-            const localPath = path.join(process.cwd(), file);
-            const dir = path.dirname(localPath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(localPath, data, "utf8");
-            updated++;
-          } catch (dlErr) {
-            failed.push(file);
-            console.error(`[UPDATE] Failed to fetch ${file}:`, dlErr.message);
-          }
+      if (!isForce && CURRENT_VERSION === latestVersion) {
+        const peek = await getUpdateCheck(CURRENT_VERSION);
+        if (!peek.isGitRepo || peek.commitsBehind === 0) {
+          return await reply(
+            `✅ *HANS-MD reports v${CURRENT_VERSION}* (matches remote).\n\n` +
+              `If features are still missing, run \`${prefix}update force\` to re-sync all files and restart.`
+          );
         }
+      }
 
-        let msg = `╭━═『 *HOT-SWAP UPDATE* 』═━╮\n┃ ✅ *Files synced:* ${updated}/${filesToUpdate.length}\n┃ 🆕 *Version:* v${latestVersion}\n╰━━━━━━━━━━━━━━━━━━━━━━━╯\n\n`;
-        if (failed.length) {
-          msg += `⚠️ *Failed files:*\n${failed.map(f => `• ${f}`).join("\n")}\n\n`;
+      await reply(
+        `🔄 *Updating HANS-MD*\n` +
+          `v${CURRENT_VERSION} ➔ v${latestVersion || "latest"}\n` +
+          `${isForce ? "⚡ *Force mode* — full re-sync\n" : ""}` +
+          `_Please wait..._`
+      );
+
+      const result = await runUpdate({
+        force: isForce,
+        onProgress: async (line) => console.log("[UPDATE]", line),
+      });
+
+      if (result.skipped && result.reason === "already_up_to_date") {
+        return await reply(
+          `✅ Already up to date (v${CURRENT_VERSION}).\nUse \`${prefix}update force\` to re-sync anyway.`
+        );
+      }
+
+      if (!result.ok) {
+        let errMsg = `❌ *Update failed*\n\n*Reason:* ${result.reason || "unknown"}\n`;
+        if (result.syncResult?.failed?.length) {
+          errMsg += `\n*Failed files:*\n${result.syncResult.failed
+            .slice(0, 8)
+            .map((f) => `• ${f.path}: ${f.error}`)
+            .join("\n")}`;
         }
-        msg += `🚀 *Restarting bot via PM2...*\n\n_If issues persist, redeploy from GitHub._`;
+        return await reply(errMsg);
+      }
 
-        await reply(msg, {
-          title: "Hot-Swap Update",
-          body: `v${CURRENT_VERSION} → v${latestVersion}`
-        });
+      let msg = `╭━═『 *UPDATE COMPLETE* 』═━╮\n`;
+      msg += `┃ 📦 *Was:* v${result.localVersion}\n`;
+      msg += `┃ 🆕 *Target:* v${result.remoteVersion || latestVersion}\n`;
+      msg += `┃ 📂 *Method:* ${result.isGitRepo ? "Git reset" : "GitHub hot-swap"}\n`;
+      msg += `┃ 📝 *Files changed:* ${result.filesChanged ?? "?"}\n`;
+      msg += `┃ 📦 *npm install:* ${result.packageJsonChanged ? "yes" : "skipped"}\n`;
+      msg += `╰━━━━━━━━━━━━━━━━━━━━━━━╯\n\n`;
+      msg += `*Steps:*\n${(result.steps || []).map((s) => `• ${s}`).join("\n")}\n\n`;
+      msg += `🚀 *Restarting bot...*`;
 
-        setTimeout(() => process.exit(0), 2500);
+      await reply(msg, { title: "System Update", body: "Sync complete — restarting" });
+
+      const restart = await restartBot();
+      console.log("[UPDATE] Restart:", restart.method, restart.note || "");
+
+      if (restart.method.startsWith("process.exit")) {
+        return;
       }
     } catch (e) {
-      console.error(e);
-      reply("❌ Error occurred during update check.");
+      console.error("[UPDATE ERROR]", e);
+      await reply(`❌ *Update error:*\n\n${e.message || e}`);
     }
   }
 );

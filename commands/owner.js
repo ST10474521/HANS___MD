@@ -116,6 +116,39 @@ cmd(
 
 cmd(
   {
+    pattern: "settimezone",
+    alias: ["timezone", "tz"],
+    category: "owner",
+    react: "🌍",
+    desc: "Set owner timezone for autolock schedules (IANA name)",
+    usage: ".settimezone Africa/Lagos",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isOwner, isSudo, q, reply }) => {
+    if (!isOwner && !isSudo) return reply("❌ Owner/Sudo only.");
+    const tz = (q || "").trim();
+    if (!tz) {
+      const db = getDB();
+      const current = db.env?.TIMEZONE || process.env.TIMEZONE || "UTC";
+      return reply(`🌍 Current timezone: *${current}*\n\nUsage: \`.settimezone Africa/Lagos\``);
+    }
+
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      return reply("❌ Invalid timezone. Use an IANA name like `Africa/Lagos`, `Europe/London`, `America/New_York`.");
+    }
+
+    const db = getDB();
+    db.env = db.env && typeof db.env === "object" ? db.env : {};
+    db.env.TIMEZONE = tz;
+    saveGlobal(db);
+    await reply(`✅ Timezone set to *${tz}*\n\nAutolock (.autolock) will use this timezone.`);
+  }
+);
+
+cmd(
+  {
     pattern: "antidelete",
     alias: ["antidel"],
     category: "owner",

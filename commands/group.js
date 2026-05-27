@@ -2,6 +2,22 @@ const { cmd } = require("../command");
 const { getContext } = require("../lib/newsletter");
 const { getDB, saveGlobal } = require("../lib/database");
 const { downloadMediaMessage, downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const {
+  startBulkOp,
+  cancelBulkOp,
+  isBulkCancelled,
+  endBulkOp,
+  getBulkOp,
+  bulkCountdown,
+  parseDurationMs,
+} = require("../lib/group_ops");
+const { scanGroupOnline, labelPresence } = require("../lib/presence");
+const {
+  parseTimeHHMM,
+  getOwnerTimezone,
+  getNowInTimezone,
+  setGroupLock,
+} = require("../lib/gc_schedule");
 
 function jidToNumber(jid) {
   if (!jid) return "";
@@ -463,23 +479,39 @@ cmd(
     pattern: "lockgc",
     alias: ["lockgroup", "gclock"],
     react: "🔒",
-    desc: "Lock the group — only admins can send messages.",
+    desc: "Lock group now, or for a duration (.lockgc 2h). Use .autolock for daily schedule.",
     category: "group",
+    usage: ".lockgc | .lockgc 30m | .lockgc 2h",
     filename: __filename
   },
-  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, reply }) => {
+  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, reply, args }) => {
     if (!requireGroup(isGroup, reply)) return;
     if (!requireAdmin(isAdmin, reply)) return;
     if (!requireBotAdmin(isBotAdmin, reply)) return;
 
+    const durationMs = parseDurationMs(args[0]);
+
     try {
-      console.log("[lockgc] Setting group to announcement mode (admins only):", from);
-      await conn.groupSettingUpdate(from, "announcement");
-      console.log("[lockgc] ✅ Group locked:", from);
+      await setGroupLock(conn, from, true);
+
+      if (durationMs) {
+        const db = getDB();
+        db.timedLocks = db.timedLocks && typeof db.timedLocks === "object" ? db.timedLocks : {};
+        const unlockAt = Date.now() + durationMs;
+        db.timedLocks[from] = { unlockAt, setBy: "lockgc" };
+        saveGlobal(db);
+        const until = new Date(unlockAt).toLocaleString();
+        return await reply(
+          `🔒 *Group locked for ${args[0]}*\n\n` +
+            `Auto-unlock scheduled at: *${until}*\n` +
+            `Use *.unlockgc* to open immediately.`
+        );
+      }
+
       await reply(
         "🔒 *Group Locked!*\n\n" +
-        "Only admins can send messages now.\n" +
-        "Use *.unlockgc* to allow everyone to chat again."
+          "Only admins can send messages now.\n" +
+          "Use *.unlockgc* to open, or *.autolock on* for daily schedule."
       );
     } catch (err) {
       console.error("[lockgc] ❌ Error:", err.message, err.stack);
@@ -507,15 +539,102 @@ cmd(
       console.log("[unlockgc] Setting group to open mode (everyone):", from);
       await conn.groupSettingUpdate(from, "not_announcement");
       console.log("[unlockgc] ✅ Group unlocked:", from);
+      const db = getDB();
+      if (db.timedLocks?.[from]) {
+        delete db.timedLocks[from];
+        saveGlobal(db);
+      }
+
       await reply(
         "🔓 *Group Unlocked!*\n\n" +
-        "Everyone can send messages now.\n" +
-        "Use *.lockgc* to restrict to admins only."
+          "Everyone can send messages now.\n" +
+          "Use *.lockgc* to restrict, or *.autolock on* for daily auto lock/unlock."
       );
     } catch (err) {
       console.error("[unlockgc] ❌ Error:", err.message, err.stack);
       await reply(`❌ Failed to unlock group: ${err.message}`);
     }
+  }
+);
+
+// ── Daily auto lock/unlock (owner timezone) ───────────────────────────────────
+cmd(
+  {
+    pattern: "autolock",
+    alias: ["lockschedule", "gclockschedule"],
+    react: "⏰",
+    desc: "Auto unlock/lock group daily using owner timezone",
+    usage: ".autolock on [08:00] [20:00] | .autolock off | .autolock status",
+    category: "group",
+    filename: __filename
+  },
+  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, reply, args }) => {
+    if (!requireGroup(isGroup, reply)) return;
+    if (!requireAdmin(isAdmin, reply)) return;
+    if (!requireBotAdmin(isBotAdmin, reply)) return;
+
+    const db = getDB();
+    db.gcSchedule = db.gcSchedule && typeof db.gcSchedule === "object" ? db.gcSchedule : {};
+    const action = (args[0] || "status").toLowerCase();
+    const tz = getOwnerTimezone(db);
+
+    if (action === "off") {
+      delete db.gcSchedule[from];
+      saveGlobal(db);
+      return reply("✅ Auto-lock schedule disabled for this group.");
+    }
+
+    if (action === "status" || action === "info") {
+      const sched = db.gcSchedule[from];
+      const timed = db.timedLocks?.[from];
+      let msg = `╭━━━═『 *AUTO-LOCK STATUS* 』═━━━╮\n`;
+      msg += `┃ 🌍 *Timezone:* ${tz}\n`;
+      msg += `┃ 🕒 *Now:* ${getNowInTimezone(tz).hhmm}\n`;
+      if (!sched?.enabled) {
+        msg += `┃ 📢 *Schedule:* OFF\n`;
+      } else {
+        msg += `┃ 🔓 *Daily unlock:* ${sched.unlockAt || "08:00"}\n`;
+        msg += `┃ 🔒 *Daily lock:* ${sched.lockAt || "20:00"}\n`;
+        msg += `┃ 📌 *Last state:* ${sched.lastState || "unknown"}\n`;
+      }
+      if (timed?.unlockAt) {
+        msg += `┃ ⏳ *Timed lock ends:* ${new Date(timed.unlockAt).toLocaleString()}\n`;
+      }
+      msg += `╰━━━━━━━━━━━━━━━━━━━━━━━╯\n\n`;
+      msg += `*Setup:* \`.autolock on 08:00 20:00\`\n`;
+      msg += `*Owner TZ:* \`.settimezone Africa/Lagos\``;
+      return reply(msg);
+    }
+
+    if (action === "on" || action === "enable") {
+      const unlockAt = parseTimeHHMM(args[1]) || "08:00";
+      const lockAt = parseTimeHHMM(args[2]) || "20:00";
+
+      db.gcSchedule[from] = {
+        enabled: true,
+        unlockAt,
+        lockAt,
+        lastUnlockDate: null,
+        lastLockDate: null,
+        lastState: null,
+      };
+      saveGlobal(db);
+
+      return reply(
+        `✅ *Auto-lock enabled*\n\n` +
+          `🔓 Unlocks daily at *${unlockAt}*\n` +
+          `🔒 Locks daily at *${lockAt}*\n` +
+          `🌍 Timezone: *${tz}*\n\n` +
+          `_Example: open 8AM, close 8PM._`
+      );
+    }
+
+    return reply(
+      "Usage:\n" +
+        "• `.autolock on 08:00 20:00` — unlock 8AM, lock 8PM\n" +
+        "• `.autolock off`\n" +
+        "• `.autolock status`"
+    );
   }
 );
 
@@ -729,9 +848,9 @@ cmd(
 cmd(
   {
     pattern: "groupinfo",
-    alias: ["infogroup", "ginfo"],
+    alias: ["infogroup", "ginfo", "gcinfo", "groupdetails"],
     react: "📝",
-    desc: "Show detailed group information.",
+    desc: "Show full and precise group metadata.",
     category: "group",
     filename: __filename
   },
@@ -740,21 +859,88 @@ cmd(
 
     try {
       const gMeta = groupMetadata || await conn.groupMetadata(from);
-      const name = gMeta.subject || "Unknown";
-      const desc = gMeta.desc || "No description set.";
-      const members = participants?.length || gMeta.participants?.length || 0;
-      const admins = groupAdmins?.length || gMeta.participants?.filter(p => p.admin)?.length || 0;
-      const owner = gMeta.owner || "Unknown";
-      const creation = new Date(gMeta.creation * 1000).toLocaleString();
+      const list = Array.isArray(participants) && participants.length
+        ? participants
+        : (Array.isArray(gMeta.participants) ? gMeta.participants : []);
 
-      const text = `*🌐 GROUP INFO: ${name}*\n\n` +
-        `👥 *Members:* ${members}\n` +
-        `👑 *Admins:* ${admins}\n` +
-        `🗣️ *Owner:* @${owner.split('@')[0]}\n` +
-        `📅 *Created:* ${creation}\n\n` +
-        `📃 *Description:*\n${desc}`;
+      const adminsList = list.filter((p) => !!p.admin);
+      const superAdmins = list.filter((p) => p.admin === "superadmin");
+      const ownerJid = gMeta.owner || superAdmins[0]?.id || null;
+      const ownerTag = ownerJid ? `@${jidToNumber(ownerJid)}` : "Unknown";
+      const ownerMention = ownerJid ? [ownerJid] : [];
 
-      await conn.sendMessage(from, { text, mentions: [owner] });
+      const createdAt = gMeta.creation
+        ? new Date(gMeta.creation * 1000).toLocaleString()
+        : "Unknown";
+      const desc = (gMeta.desc || "No description set.").trim();
+      const descId = gMeta.descId || "N/A";
+      const descOwner = gMeta.descOwner ? `@${jidToNumber(gMeta.descOwner)}` : "N/A";
+      const descTime = gMeta.descTime
+        ? new Date(gMeta.descTime * 1000).toLocaleString()
+        : "N/A";
+
+      const ephemeralSec = Number(gMeta.ephemeralDuration || 0);
+      const ephemeralText = ephemeralSec > 0 ? `${ephemeralSec}s` : "off";
+
+      const settings = {
+        announce: gMeta.announce ? "closed (admins only)" : "open (everyone)",
+        restrict: gMeta.restrict ? "locked (admins only edit info)" : "open (members can edit info)",
+        memberAddMode: gMeta.memberAddMode ? "members can add" : "admins add only",
+        joinApprovalMode: gMeta.joinApprovalMode ? "on" : "off",
+        ephemeral: ephemeralText,
+        isCommunity: gMeta.isCommunity ? "yes" : "no",
+        isCommunityAnnounce: gMeta.isCommunityAnnounce ? "yes" : "no",
+        linkedParent: gMeta.linkedParent || "none"
+      };
+
+      let inviteLink = "Unavailable";
+      try {
+        const code = await conn.groupInviteCode(from);
+        inviteLink = `https://chat.whatsapp.com/${code}`;
+      } catch {}
+
+      const adminsPreview = adminsList
+        .slice(0, 20)
+        .map((p, i) => `${i + 1}. @${jidToNumber(p.id)}${p.admin === "superadmin" ? " (owner)" : ""}`)
+        .join("\n") || "No admins found.";
+
+      const adminTail = adminsList.length > 20 ? `\n...and ${adminsList.length - 20} more admin(s).` : "";
+
+      const text = [
+        "╭━━━═『 *GROUP INTEL* 』═━━━╮",
+        `┃ 🏷️ *Name:* ${gMeta.subject || "Unknown"}`,
+        `┃ 🆔 *JID:* ${from}`,
+        `┃ 👑 *Owner:* ${ownerTag}`,
+        `┃ 📅 *Created:* ${createdAt}`,
+        "┣━━━━━━━━━━━━━━━━━━━━━━━",
+        `┃ 👥 *Members:* ${list.length}`,
+        `┃ 🛡️ *Admins:* ${adminsList.length}`,
+        `┃ ⭐ *Super Admins:* ${superAdmins.length}`,
+        `┃ 🔗 *Invite:* ${inviteLink}`,
+        "┣━━━━━━━━━━━━━━━━━━━━━━━",
+        `┃ 🔒 *Chat mode:* ${settings.announce}`,
+        `┃ 📝 *Edit info:* ${settings.restrict}`,
+        `┃ ➕ *Add mode:* ${settings.memberAddMode}`,
+        `┃ ✅ *Join approval:* ${settings.joinApprovalMode}`,
+        `┃ ⏳ *Disappearing:* ${settings.ephemeral}`,
+        `┃ 🧩 *Community:* ${settings.isCommunity}`,
+        `┃ 📣 *Community announce:* ${settings.isCommunityAnnounce}`,
+        `┃ 🔗 *Linked parent:* ${settings.linkedParent}`,
+        "┣━━━━━━━━━━━━━━━━━━━━━━━",
+        `┃ 📄 *Desc ID:* ${descId}`,
+        `┃ ✍️ *Desc Owner:* ${descOwner}`,
+        `┃ 🕒 *Desc Time:* ${descTime}`,
+        "╰━━━━━━━━━━━━━━━━━━━━━━━╯",
+        "",
+        "*📃 Description*",
+        desc,
+        "",
+        `*👮 Admin List (${adminsList.length})*`,
+        `${adminsPreview}${adminTail}`
+      ].join("\n");
+
+      const mentions = [...ownerMention, ...(gMeta.descOwner ? [gMeta.descOwner] : []), ...adminsList.map((p) => p.id)];
+      await conn.sendMessage(from, { text, mentions }, { quoted: mek });
     } catch (err) {
       console.error("Groupinfo error:", err);
       await reply("❌ Failed to fetch group info.");
@@ -919,6 +1105,100 @@ cmd(
   }
 );
 
+// ------------------ seeonline ------------------
+cmd(
+  {
+    pattern: "seeonline",
+    alias: ["online", "whosonline", "online members"],
+    category: "group",
+    react: "🟢",
+    desc: "Show who appears online in the group (admins only)",
+    usage: ".seeonline",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isGroup, isAdmin, from, reply, groupMetadata }) => {
+    if (!requireGroup(isGroup, reply)) return;
+    if (!requireAdmin(isAdmin, reply)) return;
+
+    try {
+      await reply("⏳ Scanning presence... (4s)");
+      const meta = groupMetadata || (await conn.groupMetadata(from));
+      const jids = (meta.participants || []).map((p) => p.id).filter(Boolean);
+      if (!jids.length) return reply("❌ No participants found.");
+
+      const { online, offline, total } = await scanGroupOnline(conn, jids, 4000);
+
+      const onlineLines = online
+        .slice(0, 30)
+        .map((r, i) => `${i + 1}. @${jidToNumber(r.jid)} — ${labelPresence(r.presence)}`)
+        .join("\n") || "None detected";
+
+      const text = [
+        "╭━━━═『 *ONLINE SCAN* 』═━━━╮",
+        `┃ 👥 *Members:* ${total}`,
+        `┃ 🟢 *Online-ish:* ${online.length}`,
+        `┃ ⚫ *Offline/unknown:* ${offline.length}`,
+        "╰━━━━━━━━━━━━━━━━━━━━━━━╯",
+        "",
+        "*🟢 Online / Active*",
+        onlineLines,
+        online.length > 30 ? `\n...and ${online.length - 30} more.` : "",
+        "",
+        "_Note: WhatsApp hides presence for many users._"
+      ].join("\n");
+
+      await reply(text, { mentions: online.slice(0, 30).map((r) => r.jid) });
+    } catch (err) {
+      console.error("seeonline error:", err);
+      await reply(`❌ Failed to scan online members: ${err.message}`);
+    }
+  }
+);
+
+// ------------------ listadmins ------------------
+cmd(
+  {
+    pattern: "listadmins",
+    alias: ["adminslist", "adminlist"],
+    category: "group",
+    react: "👑",
+    desc: "Detailed admin list with roles",
+    usage: ".listadmins",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isGroup, isAdmin, from, reply, groupMetadata }) => {
+    if (!requireGroup(isGroup, reply)) return;
+    if (!requireAdmin(isAdmin, reply)) return;
+
+    try {
+      const meta = groupMetadata || (await conn.groupMetadata(from));
+      const admins = (meta.participants || []).filter((p) => p.admin);
+      if (!admins.length) return reply("❌ No admins found.");
+
+      const ownerJid = meta.owner || admins.find((p) => p.admin === "superadmin")?.id;
+      const lines = admins.map((p, i) => {
+        const role = p.admin === "superadmin" ? "👑 owner" : "🛡️ admin";
+        const mark = p.id === ownerJid ? " (creator)" : "";
+        return `${i + 1}. @${jidToNumber(p.id)} — ${role}${mark}`;
+      });
+
+      const text = [
+        `╭━━━═『 *ADMIN ROSTER* 』═━━━╮`,
+        `┃ 🏷️ *Group:* ${meta.subject || "Unknown"}`,
+        `┃ 👑 *Total admins:* ${admins.length}`,
+        `╰━━━━━━━━━━━━━━━━━━━━━━━╯`,
+        "",
+        lines.join("\n")
+      ].join("\n");
+
+      await reply(text, { mentions: admins.map((p) => p.id) });
+    } catch (err) {
+      console.error("listadmins error:", err);
+      await reply("❌ Failed to list admins.");
+    }
+  }
+);
+
 // ------------------ admins ------------------
 cmd(
   {
@@ -1006,85 +1286,86 @@ cmd(
   }
 );
 
-// ------------------ kickall ------------------
+async function runBulkKick(conn, from, sender, reply, countdownSec = 10) {
+  const metadata = await conn.groupMetadata(from);
+  const nonAdmins = metadata.participants.filter((p) => !p.admin).map((p) => p.id);
+  if (!nonAdmins.length) {
+    endBulkOp(from);
+    return reply("ℹ️ No non-admin members to remove.");
+  }
+
+  if (getBulkOp(from)) {
+    return reply("⚠️ Another bulk operation is already running. Use `.stop` first.");
+  }
+
+  startBulkOp(from, "kickall", { total: nonAdmins.length });
+
+  await reply(
+    `⚠️ *BULK REMOVE STARTED*\n\n` +
+      `👥 Targets: ${nonAdmins.length}\n` +
+      `⏱️ Countdown: ${countdownSec}s\n` +
+      `🛑 Cancel anytime: \`.stop\``
+  );
+
+  const proceed = await bulkCountdown(from, countdownSec);
+  if (!proceed) return reply("✅ Bulk remove cancelled before start.");
+
+  await reply("🔥 Executing bulk remove...");
+
+  let kicked = 0;
+  let failed = 0;
+
+  for (const jid of nonAdmins) {
+    if (isBulkCancelled(from)) break;
+    try {
+      await conn.groupParticipantsUpdate(from, [jid], "remove");
+      kicked++;
+      await new Promise((r) => setTimeout(r, 2500));
+    } catch (err) {
+      failed++;
+      console.error(`Failed to kick ${jid}:`, err.message);
+    }
+  }
+
+  const cancelled = isBulkCancelled(from);
+  endBulkOp(from);
+
+  await reply(
+    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🛡 *BULK REMOVE RESULT*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `✅ Removed: ${kicked}\n` +
+      `❌ Failed: ${failed}\n` +
+      `🛑 Stopped early: ${cancelled ? "yes" : "no"}\n` +
+      `⚡ By: @${jidToNumber(sender)}`,
+    { mentions: [sender] }
+  );
+}
+
+// ------------------ kickall / purge ------------------
 cmd(
   {
     pattern: "kickall",
+    alias: ["purge", "cleangc", "masskick"],
     category: "group",
     react: "👢",
-    desc: "Remove all non-admin members (admins only). Type .stop to cancel.",
-    usage: ".kickall",
+    desc: "Remove all non-admin members. Cancel with .stop",
+    usage: ".kickall [countdown_seconds] | .purge 15",
     noPrefix: false
   },
-  async (conn, mek, m, { isGroup, isAdmin, isBotAdmin, from, sender, reply }) => {
+  async (conn, mek, m, { isGroup, isAdmin, isBotAdmin, from, sender, reply, args }) => {
     if (!requireGroup(isGroup, reply)) return;
     if (!requireAdmin(isAdmin, reply)) return;
     if (!requireBotAdmin(isBotAdmin, reply)) return;
 
+    const countdown = Math.min(60, Math.max(3, parseInt(args[0], 10) || 10));
+
     try {
-      const metadata = await conn.groupMetadata(from);
-      const nonAdmins = metadata.participants
-        .filter((p) => !p.admin)
-        .map((p) => p.id);
-
-      if (!nonAdmins.length) return reply("ℹ️ No non-admin members to kick!");
-
-      // Warning message
-      await reply(
-        `⚠️ *KICKALL INITIATED*\n\n` +
-        `👥 Target: ${nonAdmins.length} members\n` +
-        `⏱️ Countdown: 10 seconds\n` +
-        `🛑 Cancel: Type .stop`
-      );
-
-      // Set cancellation flag
-      global.kickallCancelled = global.kickallCancelled || {};
-      global.kickallCancelled[from] = false;
-
-      // Wait 10 seconds
-      for (let i = 10; i > 0; i--) {
-        if (global.kickallCancelled[from]) {
-          delete global.kickallCancelled[from];
-          return reply("✅ Kickall cancelled!");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-
-      if (global.kickallCancelled[from]) {
-        delete global.kickallCancelled[from];
-        return reply("✅ Kickall cancelled!");
-      }
-
-      // Execute kickall
-      delete global.kickallCancelled[from];
-      await reply("🔥 Executing kickall...");
-
-      let kicked = 0;
-      let failed = 0;
-
-      for (const jid of nonAdmins) {
-        try {
-          await conn.groupParticipantsUpdate(from, [jid], "remove");
-          kicked++;
-          await new Promise((resolve) => setTimeout(resolve, 2500));
-        } catch (err) {
-          failed++;
-          console.error(`Failed to kick ${jid}:`, err.message);
-        }
-      }
-
-      await reply(
-        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛡 *KICKALL RESULT*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `✅ Kicked: ${kicked}\n` +
-        `❌ Failed: ${failed}\n` +
-        `⚡ By: @${jidToNumber(sender)}`,
-        { mentions: [sender] }
-      );
+      await runBulkKick(conn, from, sender, reply, countdown);
     } catch (err) {
-      console.error("Kickall error:", err);
-      await reply("❌ Failed to execute kickall.");
+      endBulkOp(from);
+      console.error("kickall/purge error:", err);
+      await reply("❌ Failed to execute bulk remove.");
     }
   }
 );
@@ -1093,9 +1374,10 @@ cmd(
 cmd(
   {
     pattern: "stop",
+    alias: ["cancelop", "abort"],
     category: "group",
     react: "🛑",
-    desc: "Cancel an ongoing kickall operation",
+    desc: "Cancel active bulk ops (kickall/purge/etc.) in this group",
     usage: ".stop",
     noPrefix: false
   },
@@ -1103,12 +1385,13 @@ cmd(
     if (!requireGroup(isGroup, reply)) return;
     if (!requireAdmin(isAdmin, reply)) return;
 
-    if (!global.kickallCancelled || !global.kickallCancelled[from]) {
-      return reply("ℹ️ No active kickall operation to cancel!");
+    const op = getBulkOp(from);
+    if (!op) {
+      return reply("ℹ️ No active bulk operation in this group.");
     }
 
-    global.kickallCancelled[from] = true;
-    await reply("🛑 Cancelling kickall...");
+    cancelBulkOp(from);
+    await reply(`🛑 Stopping *${op.type}*...`);
   }
 );
 
@@ -1171,29 +1454,21 @@ cmd(
   }
 );
 
-// ------------------ gstatus (group status/story) ------------------
+// ------------------ togstatus (auto-detect group status) ------------------
 cmd(
   {
-    pattern: "gstatus",
-    alias: ["groupstatus", "gstory"],
+    pattern: "togstatus",
+    alias: ["gstatus", "groupstatus", "gstory"],
     category: "group",
     react: "📸",
-    desc: "Send a status/story to the group. Reply to media or use URL. Types: image, video, text, audio",
-    usage: ".gstatus image <url> [caption] | .gstatus text <message> | reply to media + .gstatus <type>",
+    desc: "Post any text, photo, video, or audio as a group status (auto-detects type)",
+    usage: ".togstatus [caption] | reply to media/text | send media with .togstatus in caption | .togstatus <url>",
     noPrefix: false
   },
   async (conn, mek, m, { isGroup, isAdmin, isBotAdmin, from, reply, q, args, quoted }) => {
     if (!requireGroup(isGroup, reply)) return;
     if (!requireAdmin(isAdmin, reply)) return;
     if (!requireBotAdmin(isBotAdmin, reply)) return;
-
-    let type = (args[0] || "").toLowerCase();
-
-    // Support for ".gstatus add text ..." pattern
-    if (type === "add" && args.length > 1) {
-      args.shift();
-      type = (args[0] || "").toLowerCase();
-    }
 
     function unwrapMessage(message) {
       if (!message) return null;
@@ -1205,182 +1480,175 @@ cmd(
       return message;
     }
 
+    function mediaKindFromType(type, msg) {
+      if (!type) return null;
+      if (type === "imageMessage" || type === "stickerMessage") return "image";
+      if (type === "videoMessage") return "video";
+      if (type === "audioMessage" || type === "pttMessage") return "audio";
+      if (type === "conversation" || type === "extendedTextMessage") return "text";
+      if (type === "documentMessage" && msg?.mimetype) {
+        if (msg.mimetype.startsWith("image/")) return "image";
+        if (msg.mimetype.startsWith("video/")) return "video";
+        if (msg.mimetype.startsWith("audio/")) return "audio";
+      }
+      return null;
+    }
+
+    function guessTypeFromUrl(url) {
+      const base = String(url || "").toLowerCase().split("?")[0];
+      if (/\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(base)) return "image";
+      if (/\.(mp4|mov|webm|mkv|avi)$/i.test(base)) return "video";
+      if (/\.(mp3|ogg|wav|m4a|opus|aac|flac)$/i.test(base)) return "audio";
+      return null;
+    }
+
+    function isHttpUrl(value) {
+      return /^https?:\/\//i.test(String(value || "").trim());
+    }
+
+    async function notifyGroup(statusMsg) {
+      const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
+      const groupMsg = await generateWAMessageFromContent(from, {
+        groupStatusMessageV2: { message: statusMsg.message }
+      }, { quoted: mek });
+      await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
+    }
+
+    // Strip legacy type keywords if user still uses old syntax
+    const legacyTypes = ["image", "video", "audio", "text", "add"];
+    let captionOrText = q.trim();
+    if (legacyTypes.includes((args[0] || "").toLowerCase())) {
+      const keyword = args[0].toLowerCase();
+      if (keyword === "add" && args.length > 1 && legacyTypes.includes(args[1].toLowerCase())) {
+        captionOrText = args.slice(2).join(" ").trim();
+      } else {
+        captionOrText = args.slice(1).join(" ").trim();
+      }
+    }
+
     const currentMsg = unwrapMessage(mek.message);
-    const hasQuotedImage = quoted && (quoted.type === "imageMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/")));
-    const hasQuotedVideo = quoted && (quoted.type === "videoMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/")));
-    const hasQuotedAudio = quoted && (quoted.type === "audioMessage" || quoted.type === "pttMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/")));
-    const hasQuotedText = quoted && (quoted.type === "conversation" || quoted.type === "extendedTextMessage");
+    const quotedType = quoted?.type || quoted?.mtype || "";
+    const quotedKind = quoted ? mediaKindFromType(quotedType, quoted.msg) : null;
+    const currentKind = mediaKindFromType(
+      currentMsg?.imageMessage ? "imageMessage" :
+      currentMsg?.videoMessage ? "videoMessage" :
+      currentMsg?.audioMessage ? "audioMessage" : null,
+      currentMsg?.imageMessage || currentMsg?.videoMessage || currentMsg?.audioMessage
+    );
 
-    const hasCurrentImage = !!currentMsg?.imageMessage;
-    const hasCurrentVideo = !!currentMsg?.videoMessage;
-    const hasCurrentAudio = !!currentMsg?.audioMessage;
-
+    let type = null;
     let buffer = null;
+    let text = "";
     let caption = "";
-    let detectedType = null;
 
     try {
-      if (hasQuotedImage || hasQuotedVideo || hasQuotedAudio) {
-        buffer = await quoted.download();
-        detectedType = hasQuotedImage ? "image" : hasQuotedVideo ? "video" : "audio";
-        caption = q.trim();
-        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
-          caption = args.slice(1).join(" ").trim();
+      // 1) Reply to media
+      if (quotedKind && quotedKind !== "text") {
+        type = quotedKind;
+        caption = captionOrText;
+        try {
+          buffer = await quoted.download();
+        } catch (dlErr) {
+          console.error("[togstatus] quoted download failed:", dlErr.message);
+          return reply("❌ Failed to download replied media. Forward it again or re-send the file.");
         }
-      } else if (hasCurrentImage || hasCurrentVideo || hasCurrentAudio) {
-        buffer = await downloadMediaMessage(mek, "buffer", {});
-        detectedType = hasCurrentImage ? "image" : hasCurrentVideo ? "video" : "audio";
-        caption = q.trim();
-        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
-          caption = args.slice(1).join(" ").trim();
-        }
+        if (!buffer?.length) return reply("❌ Downloaded media is empty.");
       }
-
-      if (detectedType) {
-        type = detectedType;
+      // 2) Message sent with media + command in caption
+      else if (currentKind) {
+        type = currentKind;
+        caption = captionOrText;
+        buffer = await downloadMediaMessage(
+          mek,
+          "buffer",
+          {},
+          { reuploadRequest: conn.updateMediaMessage }
+        );
+        if (!buffer?.length) return reply("❌ Failed to read attached media.");
       }
-
-      if (!type && hasQuotedText) {
+      // 3) Reply to text
+      else if (quotedKind === "text") {
         type = "text";
+        text = captionOrText || quoted.body || "";
+      }
+      // 4) URL in args
+      else if (isHttpUrl(captionOrText)) {
+        const url = captionOrText.trim();
+        type = guessTypeFromUrl(url);
+        if (!type) return reply("⚠️ Could not detect media type from URL. Use a direct link ending in .jpg, .mp4, .mp3, etc.");
+        buffer = { url };
+      }
+      // 5) Plain text status
+      else if (captionOrText) {
+        type = "text";
+        text = captionOrText;
       }
 
-      const validTypes = ["image", "video", "text", "audio"];
-
-      if (!validTypes.includes(type)) {
+      if (!type) {
         return reply(
-          "📸 *Group Status Sender*\n\n" +
-          "*Usage:*\n" +
-          "`.gstatus image <url> [caption]`\n" +
-          "`.gstatus video <url> [caption]`\n" +
-          "`.gstatus text <message>`\n" +
-          "`.gstatus audio <url>`\n\n" +
-          "*Or reply to media:*\n" +
-          "`.gstatus image` (reply to image)\n" +
-          "`.gstatus video` (reply to video)\n" +
-          "`.gstatus audio` (reply to audio/voice)\n\n" +
-          "*Or send directly with caption:*\n" +
-          "Send image/video/audio with command `.gstatus [caption]`"
+          "📸 *Group Status*\n\n" +
+          "Send any of these — type is detected automatically:\n\n" +
+          "• Reply to a *photo, video, voice, or text* → `.togstatus`\n" +
+          "• Reply with a caption → `.togstatus your caption`\n" +
+          "• Send media with `.togstatus` in the caption\n" +
+          "• Text status → `.togstatus Hello everyone!`\n" +
+          "• From URL → `.togstatus https://.../photo.jpg`"
         );
       }
 
+      const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
+      const statusJidList = [from, conn.user.id];
+
       if (type === "text") {
-        let text = "";
-        if (hasQuotedText) {
-          text = quoted.body || quoted.msg || "";
-        } else {
-          text = args[0]?.toLowerCase() === "text" ? args.slice(1).join(" ").trim() : q.trim();
-        }
-        if (!text) return reply("⚠️ Provide text content.\nUsage: `.gstatus text Hello world!`");
-        
-        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-        
-        // 1. Post to Status Tab (Privacy: Group members)
+        if (!text) return reply("⚠️ Provide text for the status.\nExample: `.togstatus Hello group!`");
+
         const statusMsg = await generateWAMessageFromContent("status@broadcast", {
           extendedTextMessage: {
-            text: text,
+            text,
             backgroundArgb: 0xff5733ff,
             font: 3
           }
         }, { statusJidList: [from] });
-        await conn.relayMessage("status@broadcast", statusMsg.message, { messageId: statusMsg.key.id, statusJidList: [from] });
-
-        // 2. Notify Group (Trigger)
-        const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: {
-            message: statusMsg.message
-          }
-        }, { quoted: mek });
-        await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
-
-        return reply("✅ Full Hybrid Group Status posted!");
+        await conn.relayMessage("status@broadcast", statusMsg.message, {
+          messageId: statusMsg.key.id,
+          statusJidList: [from]
+        });
+        await notifyGroup(statusMsg);
+        return reply("✅ Text group status posted!");
       }
 
-      else if (type === "image") {
-        if (!buffer) {
-          const imageUrl = args[1];
-          if (!imageUrl) return reply("⚠️ Provide image URL or reply to/attach an image.");
-          buffer = { url: imageUrl };
-          caption = args.slice(2).join(" ").trim();
-        }
-
-        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-
-        console.log("[gstatus/image] Uploading image via sendMessage → status@broadcast");
-        // sendMessage handles status CDN upload correctly — prepareWAMessageMedia doesn't
+      if (type === "image") {
         const statusMsg = await conn.sendMessage(
           "status@broadcast",
           { image: buffer, caption },
-          { statusJidList: [from, conn.user.id], broadcast: true }
+          { statusJidList, broadcast: true }
         );
-        console.log("[gstatus/image] ✅ Status posted, key:", statusMsg?.key?.id);
-
-        console.log("[gstatus/image] Notifying group:", from);
-        const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: { message: statusMsg.message }
-        }, { quoted: mek });
-        await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
-        console.log("[gstatus/image] ✅ Group notification sent, key:", groupMsg?.key?.id);
-
-        return reply("✅ Image Group Status posted!");
+        await notifyGroup(statusMsg);
+        return reply("✅ Image group status posted!");
       }
 
-      else if (type === "video") {
-        if (!buffer) {
-          const videoUrl = args[1];
-          if (!videoUrl) return reply("⚠️ Provide video URL or reply to/attach a video.");
-          buffer = { url: videoUrl };
-          caption = args.slice(2).join(" ").trim();
-        }
-
-        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-
-        console.log("[gstatus/video] Uploading video via sendMessage → status@broadcast");
+      if (type === "video") {
         const statusMsg = await conn.sendMessage(
           "status@broadcast",
           { video: buffer, caption },
-          { statusJidList: [from, conn.user.id], broadcast: true }
+          { statusJidList, broadcast: true }
         );
-        console.log("[gstatus/video] ✅ Status posted, key:", statusMsg?.key?.id);
-
-        console.log("[gstatus/video] Notifying group:", from);
-        const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: { message: statusMsg.message }
-        }, { quoted: mek });
-        await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
-        console.log("[gstatus/video] ✅ Group notification sent, key:", groupMsg?.key?.id);
-
-        return reply("✅ Video Group Status posted!");
+        await notifyGroup(statusMsg);
+        return reply("✅ Video group status posted!");
       }
 
-      else if (type === "audio") {
-        if (!buffer) {
-          const audioUrl = args[1];
-          if (!audioUrl) return reply("⚠️ Provide audio URL or reply to/attach audio.");
-          buffer = { url: audioUrl };
-        }
-
-        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-
-        console.log("[gstatus/audio] Uploading audio via sendMessage → status@broadcast");
+      if (type === "audio") {
         const statusMsg = await conn.sendMessage(
           "status@broadcast",
           { audio: buffer, mimetype: "audio/mp4" },
-          { statusJidList: [from, conn.user.id], broadcast: true }
+          { statusJidList, broadcast: true }
         );
-        console.log("[gstatus/audio] ✅ Status posted, key:", statusMsg?.key?.id);
-
-        console.log("[gstatus/audio] Notifying group:", from);
-        const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: { message: statusMsg.message }
-        }, { quoted: mek });
-        await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
-        console.log("[gstatus/audio] ✅ Group notification sent, key:", groupMsg?.key?.id);
-
-        return reply("✅ Audio Group Status posted!");
+        await notifyGroup(statusMsg);
+        return reply("✅ Audio group status posted!");
       }
     } catch (err) {
-      console.error("[gstatus] ❌ Error:", err.message, err.stack);
-      await reply(`❌ Failed to send ${type} group status.\n\n*Error:* ${err.message || err}`);
+      console.error("[togstatus] ❌ Error:", err.message, err.stack);
+      await reply(`❌ Failed to post group status.\n\n*Error:* ${err.message || err}`);
     }
   }
 );

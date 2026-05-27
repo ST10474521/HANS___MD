@@ -268,6 +268,13 @@ async function startBot() {
           isFirstConnect = false;
         }
 
+        try {
+          require("./lib/presence").wirePresence(conn);
+          require("./lib/gc_schedule").startGcScheduler(conn);
+        } catch (schedErr) {
+          console.error("[SCHEDULER] Failed to start:", schedErr.message);
+        }
+
         if (config.ALWAYS_ONLINE) {
           // Force online state immediately with safety guard
           try { await conn.sendPresenceUpdate("available"); } catch {}
@@ -348,46 +355,53 @@ async function startBot() {
     const antiDel = db.env?.ANTI_DELETE !== undefined ? db.env.ANTI_DELETE : config.ANTI_DELETE;
     if (!antiDel) return;
     for (const update of updates) {
-      if (update?.update?.message === null) {
-        const stored = getStoredMessage(update?.key?.id);
-        if (!stored) continue;
+      const protocolMessage = update?.update?.message?.protocolMessage;
+      const revokedKey = protocolMessage?.key;
+      const isDeleted =
+        update?.update?.message === null ||
+        (!!protocolMessage &&
+          (protocolMessage.type === 0 || protocolMessage.type === "REVOKE" || !!revokedKey?.id));
+      if (!isDeleted) continue;
 
-        const mode = typeof antiDel === "string" ? antiDel.toLowerCase() : (antiDel === true ? "dm" : "off");
-        if (mode === "off") continue;
+      const deletedMessageId = revokedKey?.id || update?.key?.id;
+      const stored = getStoredMessage(deletedMessageId);
+      if (!stored) continue;
 
-        const reportText = `╭━━━═ 『 *ANTI-DELETE* 』 ═━━━╮\n` +
-                          `┃ 🗑️ *Status:* Recovered\n` +
-                          `┃ 👤 *From:* @${(stored.sender || "").split("@")[0]}\n` +
-                          `┃ 📍 *Source:* ${(stored.from || "").endsWith("@g.us") ? "Group Message" : "Private Chat"}\n` +
-                          `┃ 📅 *Date:* ${new Date(stored.timestamp).toLocaleDateString()}\n` +
-                          `┃ ⏰ *Time:* ${new Date(stored.timestamp).toLocaleTimeString()}\n` +
-                          `┃ 📦 *Type:* ${(stored.type || "unknown").toUpperCase()}\n` +
-                          `╰━━━━━━━━━━══━━━━━━━━━━╯\n\n` +
-                          `*『 ORIGINAL MESSAGE 』*\n` +
-                          `━━━━━━━━━━━━━━━━━━\n` +
-                          `${stored.body}\n` +
-                          `━━━━━━━━━━━━━━━━━━`;
+      const mode = typeof antiDel === "string" ? antiDel.toLowerCase() : (antiDel === true ? "dm" : "off");
+      if (mode === "off") continue;
 
-        const contextInfo = {
-          ...require("./lib/newsletter").getContext({
-            title: "🚨 Message Intercepted 🚨",
-            body: `Source: ${stored.from}`
-          }),
-          mentionedJid: [stored.sender]
-        };
+      const reportText = `╭━━━═ 『 *ANTI-DELETE* 』 ═━━━╮\n` +
+                        `┃ 🗑️ *Status:* Recovered\n` +
+                        `┃ 👤 *From:* @${(stored.sender || "").split("@")[0]}\n` +
+                        `┃ 📍 *Source:* ${(stored.from || "").endsWith("@g.us") ? "Group Message" : "Private Chat"}\n` +
+                        `┃ 📅 *Date:* ${new Date(stored.timestamp).toLocaleDateString()}\n` +
+                        `┃ ⏰ *Time:* ${new Date(stored.timestamp).toLocaleTimeString()}\n` +
+                        `┃ 📦 *Type:* ${(stored.type || "unknown").toUpperCase()}\n` +
+                        `╰━━━━━━━━━━══━━━━━━━━━━╯\n\n` +
+                        `*『 ORIGINAL MESSAGE 』*\n` +
+                        `━━━━━━━━━━━━━━━━━━\n` +
+                        `${stored.body}\n` +
+                        `━━━━━━━━━━━━━━━━━━`;
 
-        // 1. Send to Owner DM (if mode is 'dm' or 'both')
-        if (mode === "dm" || mode === "both") {
-          for (const ownerNumber of config.OWNER_NUMBER) {
-            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
-            await conn.sendMessage(ownerJid, { text: reportText, contextInfo }).catch(() => {});
-          }
+      const contextInfo = {
+        ...require("./lib/newsletter").getContext({
+          title: "🚨 Message Intercepted 🚨",
+          body: `Source: ${stored.from}`
+        }),
+        mentionedJid: [stored.sender]
+      };
+
+      // 1. Send to Owner DM (if mode is 'dm' or 'both')
+      if (mode === "dm" || mode === "both") {
+        for (const ownerNumber of config.OWNER_NUMBER) {
+          const ownerJid = `${ownerNumber}@s.whatsapp.net`;
+          await conn.sendMessage(ownerJid, { text: reportText, contextInfo }).catch(() => {});
         }
+      }
 
-        // 2. Send to Group/Source (if mode is 'group' or 'both')
-        if (mode === "group" || mode === "both") {
-          await conn.sendMessage(stored.from, { text: reportText, contextInfo }).catch(() => {});
-        }
+      // 2. Send to Group/Source (if mode is 'group' or 'both')
+      if (mode === "group" || mode === "both") {
+        await conn.sendMessage(stored.from, { text: reportText, contextInfo }).catch(() => {});
       }
     }
   });
