@@ -534,200 +534,175 @@ cmd(
   }
 );
 
+// ─── shared helper ────────────────────────────────────────────
+async function getUserProfile(conn, jid) {
+  const [pfpResult, statusResult, waResult] = await Promise.allSettled([
+    conn.profilePictureUrl(jid, "image"),
+    conn.fetchStatus(jid),
+    conn.onWhatsApp(jid),
+  ]);
+
+  const pfp =
+    pfpResult.status === "fulfilled" && pfpResult.value
+      ? pfpResult.value
+      : "https://i.ibb.co/0jqHpnp/avatar.png";
+
+  const about =
+    statusResult.status === "fulfilled"
+      ? statusResult.value?.status || "No bio"
+      : "No bio";
+
+  const setAt =
+    statusResult.status === "fulfilled" && statusResult.value?.setAt
+      ? new Date(statusResult.value.setAt).toLocaleString()
+      : "Unknown";
+
+  // onWhatsApp can return undefined OR an empty array — handle both
+  const waArray =
+    waResult.status === "fulfilled" && Array.isArray(waResult.value)
+      ? waResult.value
+      : [];
+  const waInfo = waArray.length > 0 ? waArray[0] : null;
+
+  const exists = waInfo ? (waInfo.exists ? "Yes ✅" : "No ❌") : "Unknown";
+  const isBusiness = waInfo?.isBusiness || false;
+  const business = isBusiness ? "Yes 💼" : "No";
+  const resolvedJid = waInfo?.jid || jid;
+
+  // Only hit the business API if actually a business account
+  let bizDesc = "N/A";
+  let bizCategory = "N/A";
+  if (isBusiness) {
+    try {
+      const biz = await conn.getBusinessProfile(jid);
+      if (biz) {
+        bizDesc = biz.description || "None";
+        bizCategory = biz.category || "Unknown";
+      }
+    } catch (e) {
+      console.error(`[getUserProfile] getBusinessProfile failed:`, e.message);
+    }
+  }
+
+  return { pfp, about, setAt, exists, business, jid: resolvedJid, bizDesc, bizCategory };
+}
+
+// ─── .whoami ──────────────────────────────────────────────────
 cmd(
   {
     pattern: "whoami",
     alias: ["profile", "me"],
     react: "👤",
     category: "general",
-    desc: "Show WhatsApp account info"
+    desc: "Show your WhatsApp account info",
   },
   async (conn, mek, m, { from, pushname, senderNumber }) => {
     try {
-      console.log(`[DEBUG] whoami START: from=${from}, sender=${m.sender}`);
-      
-      // Profile Picture
-      let pfp;
-      try {
-          pfp = await conn.profilePictureUrl(m.sender, "image");
-          console.log(`[DEBUG] PFP Success: ${pfp}`);
-      } catch (e) {
-          console.log(`[DEBUG] PFP Error: ${e.message}`);
-          pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
-      }
-
-      // About/Bio
-      let about = "No bio";
-      let setAt = "Unknown";
-      try {
-          const status = await conn.fetchStatus(m.sender);
-          console.log(`[DEBUG] Status Fetched: ${JSON.stringify(status)}`);
-          about = status?.status || "No bio";
-          if (status?.setAt) {
-              setAt = new Date(status.setAt).toLocaleString();
-          }
-      } catch (e) {
-          console.log(`[DEBUG] Status Error: ${e.message}`);
-      }
-
-      // WhatsApp existence/business
-      let exists = "Unknown";
-      let business = "No";
-      let jid = m.sender;
-      try {
-          const [info] = await conn.onWhatsApp(m.sender);
-          console.log(`[DEBUG] onWhatsApp Fetched: ${JSON.stringify(info)}`);
-          exists = info?.exists ? "Yes ✅" : "No ❌";
-          if (info?.isBusiness) business = "Yes 💼";
-          if (info?.jid) jid = info.jid;
-      } catch (e) {
-          console.log(`[DEBUG] onWhatsApp Error: ${e.message}`);
-      }
-
-      // Business profile
-      let bizDesc = "N/A";
-      let bizCategory = "N/A";
-      try {
-          const biz = await conn.getBusinessProfile(m.sender);
-          console.log(`[DEBUG] BusinessProfile Fetched: ${JSON.stringify(biz)}`);
-          if (biz) {
-              bizDesc = biz.description || "None";
-              bizCategory = biz.category || "Unknown";
-          }
-      } catch (e) {
-          console.log(`[DEBUG] Business Error: ${e.message}`);
-      }
-
-      // Device Guess
-      let device = "Unknown";
-      if (mek.key.id.startsWith("3A")) device = "Android 🤖";
-      else if (mek.key.id.startsWith("3EB0")) device = "Web/Desktop 💻";
-      else device = "iPhone 🍎";
-      console.log(`[DEBUG] Device: ${device}`);
+      const profile = await getUserProfile(conn, m.sender);
 
       const text = `
 ╭━━〔 👤 WHATSAPP PROFILE 〕━━⬣
 ┃
-┃ 🏷️ Name: ${pushname}
+┃ 🏷️ Name: ${pushname || "Unknown"}
 ┃ 📞 Number: ${senderNumber}
-┃ 🆔 JID: ${jid}
-┃ 📲 Device: ${device}
+┃ 🆔 JID: ${profile.jid}
 ┃
 ┣━━〔 📋 ACCOUNT INFO 〕━━⬣
-┃ ✅ Exists: ${exists}
-┃ 💼 Business: ${business}
+┃ ✅ Exists: ${profile.exists}
+┃ 💼 Business: ${profile.business}
 ┃
 ┣━━〔 ✨ ABOUT 〕━━⬣
-┃ 💭 ${about}
-┃ 🕒 Updated: ${setAt}
+┃ 💭 ${profile.about}
+┃ 🕒 Updated: ${profile.setAt}
 ┃
 ┣━━〔 🏢 BUSINESS INFO 〕━━⬣
-┃ 📂 Category: ${bizCategory}
-┃ 📝 Description: ${bizDesc}
+┃ 📂 Category: ${profile.bizCategory}
+┃ 📝 Description: ${profile.bizDesc}
 ┃
 ╰━━━━━━━━━━━━━━━━⬣
 `.trim();
 
-      console.log(`[DEBUG] Attempting to send message to ${from}`);
-      await conn.sendMessage(from, {
-          image: { url: pfp },
-          caption: text,
-          mentions: [m.sender]
-      }, { quoted: mek });
-      console.log(`[DEBUG] whoami DONE`);
+      await conn.sendMessage(
+        from,
+        { image: { url: profile.pfp }, caption: text, mentions: [m.sender] },
+        { quoted: mek }
+      );
     } catch (err) {
-      console.error(`[CRITICAL] whoami CRASH:`, err);
+      console.error(`[whoami] CRASH:`, err);
     }
   }
 );
 
+// ─── .whois ───────────────────────────────────────────────────
 cmd(
   {
     pattern: "whois",
     react: "🕵️",
     category: "general",
     desc: "Inspect a WhatsApp user",
-    usage: ".whois <reply/tag/number>"
+    usage: ".whois <reply/tag/number>",
   },
   async (conn, mek, m, { from, args, reply }) => {
     let target;
-    if (m.quoted?.sender) target = m.quoted.sender;
-    else if (m.mentionedJid?.[0]) target = m.mentionedJid[0];
-    else if (args[0]) {
+    let nameHint = "Unknown"; // best name we can get before hitting the API
+
+    if (m.quoted?.sender) {
+      target = m.quoted.sender;
+      // pushName comes free on the quoted message — no API call needed
+      nameHint = m.quoted.pushName || "Unknown";
+    } else if (m.mentionedJid?.[0]) {
+      target = m.mentionedJid[0];
+    } else if (args[0]) {
       const num = args[0].replace(/[^0-9]/g, "");
-      if (!num) return reply("⚠️ Invalid number.");
+      // basic sanity check — WA numbers are 7–15 digits
+      if (!num || num.length < 7 || num.length > 15)
+        return reply("⚠️ Invalid number. Include country code, e.g. 237690000000");
       target = num + "@s.whatsapp.net";
+    } else if (!m.isGroup) {
+      target = m.sender;
+      nameHint = m.pushName || "Unknown";
+    } else {
+      return reply("⚠️ Reply, tag, or enter a number with country code.");
     }
-    else if (!m.isGroup) target = m.sender;
-    else return reply("⚠️ Reply, tag, enter a number, or use in DM.");
+
+    // Fall back to contacts store if we still don't have a name
+    if (nameHint === "Unknown") {
+      nameHint =
+        conn.contacts?.[target]?.notify ||
+        conn.contacts?.[target]?.name ||
+        "Unknown";
+    }
 
     const number = target.split("@")[0];
-    let name = conn.contacts?.[target]?.notify || conn.contacts?.[target]?.name || "Unknown";
-
-    let pfp;
-    try {
-      pfp = await conn.profilePictureUrl(target, "image");
-    } catch {
-      pfp = "https://i.ibb.co/0jqHpnp/avatar.png";
-    }
-
-    let about = "No bio";
-    let setAt = "Unknown";
-    try {
-      const status = await conn.fetchStatus(target);
-      about = status?.status || "No bio";
-      if (status?.setAt) {
-        setAt = new Date(status.setAt).toLocaleString();
-      }
-    } catch {}
-
-    let exists = "Unknown";
-    let business = "No";
-    let jid = target;
-    try {
-      const [info] = await conn.onWhatsApp(target);
-      exists = info?.exists ? "Yes ✅" : "No ❌";
-      business = info?.isBusiness ? "Yes 💼" : "No";
-      jid = info?.jid || target;
-    } catch {}
-
-    let bizCategory = "N/A";
-    let bizDesc = "N/A";
-    try {
-      const biz = await conn.getBusinessProfile(target);
-      if (biz) {
-        bizCategory = biz.category || "Unknown";
-        bizDesc = biz.description || "None";
-      }
-    } catch {}
+    const profile = await getUserProfile(conn, target);
 
     const text = `
 ╭━━〔 🕵️ USER INSPECTOR 〕━━⬣
 ┃
-┃ 👤 Name: ${name}
+┃ 👤 Name: ${nameHint}
 ┃ 📞 Number: ${number}
-┃ 🆔 JID: ${jid}
+┃ 🆔 JID: ${profile.jid}
 ┃
 ┣━━〔 📋 ACCOUNT INFO 〕━━⬣
-┃ ✅ Exists: ${exists}
-┃ 💼 Business: ${business}
+┃ ✅ Exists: ${profile.exists}
+┃ 💼 Business: ${profile.business}
 ┃
 ┣━━〔 ✨ ABOUT 〕━━⬣
-┃ 💭 ${about}
-┃ 🕒 Updated: ${setAt}
+┃ 💭 ${profile.about}
+┃ 🕒 Updated: ${profile.setAt}
 ┃
 ┣━━〔 🏢 BUSINESS INFO 〕━━⬣
-┃ 📂 Category: ${bizCategory}
-┃ 📝 Description: ${bizDesc}
+┃ 📂 Category: ${profile.bizCategory}
+┃ 📝 Description: ${profile.bizDesc}
 ┃
 ╰━━━━━━━━━━━━━━━━⬣
 `.trim();
 
-    await conn.sendMessage(from, {
-      image: { url: pfp },
-      caption: text,
-      mentions: [target]
-    }, { quoted: mek });
+    await conn.sendMessage(
+      from,
+      { image: { url: profile.pfp }, caption: text, mentions: [target] },
+      { quoted: mek }
+    );
   }
 );
 
