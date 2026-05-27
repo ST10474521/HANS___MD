@@ -43,31 +43,73 @@ uploaders.forEach((u) => {
     react: u.react,
     category: "uploader",
     desc: u.desc,
-    usage: `.${u.pattern} (reply to media)`,
+    usage: `.${u.pattern} (reply to media or send with caption)`,
     noPrefix: false,
-  }, async (conn, mek, m, { from, reply }) => {
+  }, async (conn, mek, m, { from, quoted, reply }) => {
     try {
-      const isQuoted = !!(mek.message?.extendedTextMessage?.contextInfo?.quotedMessage);
-      const mediaMsg = isQuoted ? mek.message.extendedTextMessage.contextInfo.quotedMessage : mek.message;
-      
-      const targetMedia = mediaMsg?.imageMessage || 
-                          mediaMsg?.videoMessage || 
-                          mediaMsg?.audioMessage || 
-                          mediaMsg?.stickerMessage ||
-                          mediaMsg?.documentMessage;
+      function unwrapMessage(message) {
+        if (!message) return null;
+        if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+        if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+        if (message.viewOnceMessageV2Extension?.message) return unwrapMessage(message.viewOnceMessageV2Extension.message);
+        if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+        if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+        return message;
+      }
 
-      if (!targetMedia) return reply(`╭━〔 *DENIED* 〕━╮\n┃ 🔎 *Crit:* No physical media.\n┃ 💡 *Help:* Reply to any media.\n╰━━━━━━━━━━━━━━━━╯`);
+      function getMediaMessage(mek, quoted) {
+        if (quoted) {
+          const mtype = quoted.mtype || "";
+          const isImage = mtype === "imageMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/"));
+          const isVideo = mtype === "videoMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/"));
+          const isAudio = mtype === "audioMessage" || mtype === "pttMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/"));
+          const isSticker = mtype === "stickerMessage";
+          
+          if (isImage || isVideo || isAudio || isSticker) {
+            return {
+              download: quoted.download,
+              mimetype: quoted.msg?.mimetype || (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/mp4" : "image/webp"),
+              isImage,
+              isVideo,
+              isAudio,
+              isSticker
+            };
+          }
+        }
+        
+        const currentMsg = unwrapMessage(mek.message);
+        if (currentMsg) {
+          const isImage = !!currentMsg.imageMessage;
+          const isVideo = !!currentMsg.videoMessage;
+          const isAudio = !!currentMsg.audioMessage;
+          
+          if (isImage || isVideo || isAudio) {
+            return {
+              download: async () => {
+                const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+                return downloadMediaMessage(mek, "buffer", {});
+              },
+              mimetype: isImage ? currentMsg.imageMessage.mimetype : isVideo ? currentMsg.videoMessage.mimetype : currentMsg.audioMessage.mimetype,
+              isImage,
+              isVideo,
+              isAudio,
+              isSticker: false
+            };
+          }
+        }
+        
+        return null;
+      }
+
+      const media = getMediaMessage(mek, quoted);
+      if (!media) {
+        return reply(`╭━〔 *DENIED* 〕━╮\n┃ 🔎 *Crit:* No physical media.\n┃ 💡 *Help:* Reply to any media or send with the command in the caption.\n╰━━━━━━━━━━━━━━━━╯`);
+      }
 
       await reply(`╭━═『 *UPLOADING* 』━╮\n┃ 📡 *Provider:* ${u.provider.toUpperCase()}\n┃ ⏳ *Status:* Pushing to cloud...\n╰━━━━━━━━━━━━━━━━╯`);
 
-      const buffer = await downloadMediaMessage(
-        isQuoted ? { key: mek.message.extendedTextMessage.contextInfo, message: mediaMsg } : mek,
-        "buffer",
-        {},
-        { reuploadRequest: conn.updateMediaMessage }
-      );
-
-      const data = await apiUpload(buffer, targetMedia.mimetype, u.provider);
+      const buffer = await media.download();
+      const data = await apiUpload(buffer, media.mimetype, u.provider);
 
       if (!data.success) return reply(`❌ *Failed to upload to ${u.provider}.*`);
 

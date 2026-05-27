@@ -185,7 +185,7 @@ cmd(
     
     // Create user JID for mentioning
     const userJid = `${number}@s.whatsapp.net`;
-    await reply(`✅ @${number} added as sudo user.`, { mentions: [userJid] });
+    await reply(`✅ @${number} added as sudo user.\n\n🔄 *Note:* Please restart the bot using \`.restart\` for changes to take effect.`, { mentions: [userJid] });
   }
 );
 
@@ -223,7 +223,7 @@ cmd(
     
     // Create user JID for mentioning
     const userJid = `${number}@s.whatsapp.net`;
-    await reply(`✅ @${number} removed from sudo.`, { mentions: [userJid] });
+    await reply(`✅ @${number} removed from sudo.\n\n🔄 *Note:* Please restart the bot using \`.restart\` for changes to take effect.`, { mentions: [userJid] });
   }
 );
 
@@ -336,6 +336,7 @@ cmd(
 cmd(
   {
     pattern: "unbangroup",
+    alias: ["unbangc"],
     category: "owner",
     react: "🟢",
     desc: "Unban a group",
@@ -378,7 +379,6 @@ cmd(
     }
   }
 );
-
 // 📴 Shutdown/Stop
 cmd(
   {
@@ -397,6 +397,85 @@ cmd(
       console.log("Shutdown command triggered by owner.");
       process.exit(0);
     }, 1000);
+  }
+);
+
+// 🔄 Restart
+cmd(
+  {
+    pattern: "restart",
+    category: "owner",
+    react: "🔄",
+    desc: "Restart the bot (Owner only)",
+    usage: ".restart",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isOwner, reply }) => {
+    if (!isOwner) return reply("❌ Owner only.");
+    await reply("🔄 Restarting bot...");
+    setTimeout(() => {
+      console.log("Restart command triggered by owner.");
+      process.exit(1);
+    }, 1000);
+  }
+);
+
+// ⏸️ Pause Bot
+cmd(
+  {
+    pattern: "pausedebot",
+    alias: ["pausebot"],
+    category: "owner",
+    react: "⏸️",
+    desc: "Pause the bot to ignore messages for a specified time (Owner/Sudo only)",
+    usage: ".pausedebot 10s | 5m | 2h",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isOwner, isSudo, q, reply }) => {
+    if (!isOwner && !isSudo) return reply("❌ Owner/Sudo only.");
+    
+    let timeStr = q.toLowerCase().trim();
+    if (!timeStr) return reply("Usage: .pausedebot 10s | 5m | 2h");
+    
+    let ms = 0;
+    const match = timeStr.match(/^(\d+)(s|m|h|d)?$/);
+    if (!match) return reply("❌ Invalid time format. Examples: 30s, 10m, 2h");
+    
+    const value = parseInt(match[1]);
+    const unit = match[2] || 'm';
+    
+    if (unit === 's') ms = value * 1000;
+    else if (unit === 'm') ms = value * 60 * 1000;
+    else if (unit === 'h') ms = value * 60 * 60 * 1000;
+    else if (unit === 'd') ms = value * 24 * 60 * 60 * 1000;
+    
+    const db = getDB();
+    db.pausedUntil = Date.now() + ms;
+    saveGlobal(db);
+    
+    await reply(`⏸️ *Bot Paused*\nI will ignore all messages for the next ${value}${unit}.`);
+  }
+);
+
+// ▶️ Unpause Bot
+cmd(
+  {
+    pattern: "unpausedebot",
+    alias: ["unpausebot"],
+    category: "owner",
+    react: "▶️",
+    desc: "Unpause the bot to resume processing messages (Owner/Sudo only)",
+    usage: ".unpausedebot",
+    noPrefix: false
+  },
+  async (conn, mek, m, { isOwner, isSudo, reply }) => {
+    if (!isOwner && !isSudo) return reply("❌ Owner/Sudo only.");
+    
+    const db = getDB();
+    db.pausedUntil = 0;
+    saveGlobal(db);
+    
+    await reply("▶️ *Bot Resumed*\nBot is now active and responding to commands.");
   }
 );
 
@@ -468,23 +547,26 @@ cmd(
     usage: ".groups",
     noPrefix: false
   },
-  async (conn, mek, m, { isOwner, reply }) => {
-    if (!isOwner) return reply("❌ Owner only.");
+  async (conn, mek, m, { isOwner, isSudo, reply }) => {
+    if (!isOwner && !isSudo) return reply("❌ Owner only.");
+    try {
+      console.log("[.groups] Fetching all participating groups...");
+      const all = await conn.groupFetchAllParticipating();
+      const entries = Object.entries(all);
+      console.log("[.groups] Total groups found:", entries.length);
 
-    let groups = [];
-    if (conn.store?.chats) {
-      groups = Array.from(conn.store.chats.values()).filter((c) => c.id?.endsWith("@g.us"));
-    } else if (conn.chats) {
-      groups = Object.values(conn.chats).filter((c) => c.id?.endsWith("@g.us"));
+      if (!entries.length) return reply("📭 Bot is not in any groups.");
+
+      let text = `📋 *Groups (${entries.length} total)*\n\n`;
+      entries.forEach(([jid, meta], i) => {
+        console.log(`[.groups] ${i + 1}. ${meta.subject} | members: ${meta.participants?.length} | jid: ${jid}`);
+        text += `${i + 1}. *${meta.subject}*\n   👥 ${meta.participants?.length ?? "?"} members\n   \`${jid}\`\n\n`;
+      });
+      await reply(text);
+    } catch (e) {
+      console.error("[.groups] ❌ Error:", e.message, e.stack);
+      await reply(`❌ Failed: ${e.message}`);
     }
-
-    if (!groups.length) return reply("❌ No groups found.");
-
-    let txt = "📂 *Groups List:*\n\n";
-    groups.forEach((g, i) => {
-      txt += `${i + 1}. ${g.name || "Unnamed"}\n${g.id}\n\n`;
-    });
-    await reply(txt.trim());
   }
 );
 

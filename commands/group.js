@@ -267,8 +267,51 @@ cmd(
     category: "group",
     filename: __filename
   },
-  async (conn, mek, m, { reply }) => {
-    await reply("❌ *.add* is currently not supported.");
+  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, args, reply }) => {
+    if (!isGroup) return reply("❌ Groups only.");
+    if (!isAdmin) return reply("❌ Admins only.");
+    if (!isBotAdmin) return reply("❌ I need admin rights.");
+
+    const rawNum = (args[0] || "").replace(/\D/g, "");
+    if (!rawNum) return reply("❌ Usage: `.add 237680260772`");
+
+    const jid = `${rawNum}@s.whatsapp.net`;
+    console.log("[.add] Attempting to add:", jid, "to group:", from);
+
+    // ── Pre-check: verify number exists BEFORE calling groupParticipantsUpdate
+    let exists = false;
+    try {
+      console.log("[.add] Checking if number exists on WhatsApp:", rawNum);
+      const [check] = await conn.onWhatsApp(rawNum);
+      exists = !!check?.exists;
+      console.log("[.add] onWhatsApp result:", JSON.stringify(check));
+    } catch (e) {
+      console.error("[.add] onWhatsApp check failed:", e.message);
+    }
+
+    if (!exists) {
+      console.log("[.add] ❌ Number not on WhatsApp, aborting.");
+      return reply(`❌ +${rawNum} is not on WhatsApp.`);
+    }
+
+    try {
+      console.log("[.add] Calling groupParticipantsUpdate → add:", jid);
+      const result = await conn.groupParticipantsUpdate(from, [jid], "add");
+      console.log("[.add] groupParticipantsUpdate result:", JSON.stringify(result));
+      const res = result?.[0];
+      const statusMap = {
+        200: `✅ +${rawNum} added successfully!`,
+        403: `❌ +${rawNum} has privacy settings blocking adds.`,
+        408: `❌ Request timed out.`,
+        409: `⚠️ +${rawNum} is already in the group.`,
+        500: `❌ WhatsApp internal error, try again.`,
+      };
+      await reply(statusMap[res?.status] || `⚠️ Unknown result: ${res?.status}`);
+    } catch (e) {
+      // NEVER rethrow — catch everything so the socket doesn't die
+      console.error("[.add] ❌ groupParticipantsUpdate threw:", e.message, e.stack);
+      await reply(`❌ Add failed: ${e.message}`);
+    }
   }
 );
 
@@ -386,10 +429,10 @@ cmd(
 
 cmd(
   {
-    pattern: "group",
-    alias: ["gc"],
+    pattern: "gcmode",
+    alias: ["groupmode"],
     react: "⚙️",
-    desc: "Open/close group (admins only).",
+    desc: "Toggle group open/close mode (admins only). Usage: .gcmode open | .gcmode close",
     category: "group",
     filename: __filename
   },
@@ -400,7 +443,7 @@ cmd(
 
     const action = String(args?.[0] || "").toLowerCase();
     if (!["open", "close"].includes(action)) {
-      await reply("Usage: .group open | .group close");
+      await reply("Usage: .gcmode open | .gcmode close");
       return;
     }
 
@@ -408,8 +451,70 @@ cmd(
       await conn.groupSettingUpdate(from, action === "close" ? "announcement" : "not_announcement");
       await reply(`✅ Group is now ${action === "close" ? "closed (admins only)" : "open (everyone)"}.`);
     } catch (err) {
-      console.error("group setting error:", err);
+      console.error("[gcmode] error:", err);
       await reply("❌ Failed to update group setting.");
+    }
+  }
+);
+
+// ── Lock GC — only admins can send messages ───────────────────────────────────
+cmd(
+  {
+    pattern: "lockgc",
+    alias: ["lockgroup", "gclock"],
+    react: "🔒",
+    desc: "Lock the group — only admins can send messages.",
+    category: "group",
+    filename: __filename
+  },
+  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, reply }) => {
+    if (!requireGroup(isGroup, reply)) return;
+    if (!requireAdmin(isAdmin, reply)) return;
+    if (!requireBotAdmin(isBotAdmin, reply)) return;
+
+    try {
+      console.log("[lockgc] Setting group to announcement mode (admins only):", from);
+      await conn.groupSettingUpdate(from, "announcement");
+      console.log("[lockgc] ✅ Group locked:", from);
+      await reply(
+        "🔒 *Group Locked!*\n\n" +
+        "Only admins can send messages now.\n" +
+        "Use *.unlockgc* to allow everyone to chat again."
+      );
+    } catch (err) {
+      console.error("[lockgc] ❌ Error:", err.message, err.stack);
+      await reply(`❌ Failed to lock group: ${err.message}`);
+    }
+  }
+);
+
+// ── Unlock GC — everyone can send messages ────────────────────────────────────
+cmd(
+  {
+    pattern: "unlockgc",
+    alias: ["unlockgroup", "gcunlock"],
+    react: "🔓",
+    desc: "Unlock the group — everyone can send messages.",
+    category: "group",
+    filename: __filename
+  },
+  async (conn, mek, m, { from, isGroup, isAdmin, isBotAdmin, reply }) => {
+    if (!requireGroup(isGroup, reply)) return;
+    if (!requireAdmin(isAdmin, reply)) return;
+    if (!requireBotAdmin(isBotAdmin, reply)) return;
+
+    try {
+      console.log("[unlockgc] Setting group to open mode (everyone):", from);
+      await conn.groupSettingUpdate(from, "not_announcement");
+      console.log("[unlockgc] ✅ Group unlocked:", from);
+      await reply(
+        "🔓 *Group Unlocked!*\n\n" +
+        "Everyone can send messages now.\n" +
+        "Use *.lockgc* to restrict to admins only."
+      );
+    } catch (err) {
+      console.error("[unlockgc] ❌ Error:", err.message, err.stack);
+      await reply(`❌ Failed to unlock group: ${err.message}`);
     }
   }
 );
@@ -1082,25 +1187,6 @@ cmd(
     if (!requireAdmin(isAdmin, reply)) return;
     if (!requireBotAdmin(isBotAdmin, reply)) return;
 
-    // MANUAL IMPLEMENTATION FOR OFFICIAL BAILEYS
-    // We send a status to status@broadcast but restrict it to this group only.
-    const statusRecipients = [from]; // Send to current group
-
-    if (!q) {
-      return reply(
-        "📸 *Group Status Sender*\n\n" +
-        "*Usage:*\n" +
-        "`.gstatus image <url> [caption]`\n" +
-        "`.gstatus video <url> [caption]`\n" +
-        "`.gstatus text <message>`\n" +
-        "`.gstatus audio <url>`\n\n" +
-        "*Or reply to media:*\n" +
-        "`.gstatus image` (reply to image)\n" +
-        "`.gstatus video` (reply to video)\n" +
-        "`.gstatus audio` (reply to audio/voice)"
-      );
-    }
-
     let type = (args[0] || "").toLowerCase();
 
     // Support for ".gstatus add text ..." pattern
@@ -1109,17 +1195,81 @@ cmd(
       type = (args[0] || "").toLowerCase();
     }
 
-    const validTypes = ["image", "video", "text", "audio"];
-
-    if (!validTypes.includes(type)) {
-      return reply("⚠️ Invalid type. Use: image, video, text, audio");
+    function unwrapMessage(message) {
+      if (!message) return null;
+      if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+      if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+      if (message.viewOnceMessageV2Extension?.message) return unwrapMessage(message.viewOnceMessageV2Extension.message);
+      if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+      if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+      return message;
     }
 
+    const currentMsg = unwrapMessage(mek.message);
+    const hasQuotedImage = quoted && (quoted.type === "imageMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/")));
+    const hasQuotedVideo = quoted && (quoted.type === "videoMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/")));
+    const hasQuotedAudio = quoted && (quoted.type === "audioMessage" || quoted.type === "pttMessage" || (quoted.type === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/")));
+    const hasQuotedText = quoted && (quoted.type === "conversation" || quoted.type === "extendedTextMessage");
+
+    const hasCurrentImage = !!currentMsg?.imageMessage;
+    const hasCurrentVideo = !!currentMsg?.videoMessage;
+    const hasCurrentAudio = !!currentMsg?.audioMessage;
+
+    let buffer = null;
+    let caption = "";
+    let detectedType = null;
+
     try {
-      let payload = {};
+      if (hasQuotedImage || hasQuotedVideo || hasQuotedAudio) {
+        buffer = await quoted.download();
+        detectedType = hasQuotedImage ? "image" : hasQuotedVideo ? "video" : "audio";
+        caption = q.trim();
+        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
+          caption = args.slice(1).join(" ").trim();
+        }
+      } else if (hasCurrentImage || hasCurrentVideo || hasCurrentAudio) {
+        buffer = await downloadMediaMessage(mek, "buffer", {});
+        detectedType = hasCurrentImage ? "image" : hasCurrentVideo ? "video" : "audio";
+        caption = q.trim();
+        if (args[0] && ["image", "video", "audio", "text"].includes(args[0].toLowerCase())) {
+          caption = args.slice(1).join(" ").trim();
+        }
+      }
+
+      if (detectedType) {
+        type = detectedType;
+      }
+
+      if (!type && hasQuotedText) {
+        type = "text";
+      }
+
+      const validTypes = ["image", "video", "text", "audio"];
+
+      if (!validTypes.includes(type)) {
+        return reply(
+          "📸 *Group Status Sender*\n\n" +
+          "*Usage:*\n" +
+          "`.gstatus image <url> [caption]`\n" +
+          "`.gstatus video <url> [caption]`\n" +
+          "`.gstatus text <message>`\n" +
+          "`.gstatus audio <url>`\n\n" +
+          "*Or reply to media:*\n" +
+          "`.gstatus image` (reply to image)\n" +
+          "`.gstatus video` (reply to video)\n" +
+          "`.gstatus audio` (reply to audio/voice)\n\n" +
+          "*Or send directly with caption:*\n" +
+          "Send image/video/audio with command `.gstatus [caption]`"
+        );
+      }
 
       if (type === "text") {
-        const text = args.slice(1).join(" ").trim();
+        let text = "";
+        if (hasQuotedText) {
+          text = quoted.body || quoted.msg || "";
+        } else {
+          text = args[0]?.toLowerCase() === "text" ? args.slice(1).join(" ").trim() : q.trim();
+        }
         if (!text) return reply("⚠️ Provide text content.\nUsage: `.gstatus text Hello world!`");
         
         const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
@@ -1146,108 +1296,90 @@ cmd(
       }
 
       else if (type === "image") {
-        let buffer, caption;
-        if (quoted && quoted.type === "imageMessage") {
-          buffer = await quoted.download();
-          caption = args.slice(1).join(" ").trim();
-        } else {
+        if (!buffer) {
           const imageUrl = args[1];
-          if (!imageUrl) return reply("⚠️ Provide image URL or reply to an image.");
+          if (!imageUrl) return reply("⚠️ Provide image URL or reply to/attach an image.");
           buffer = { url: imageUrl };
           caption = args.slice(2).join(" ").trim();
         }
 
-        const { prepareWAMessageMedia, generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-        const media = await prepareWAMessageMedia({ image: buffer }, { upload: conn.waUploadToServer });
-        
-        // 1. Post to Status Tab
-        const statusMsg = await generateWAMessageFromContent("status@broadcast", {
-          imageMessage: {
-            ...media.imageMessage,
-            caption: caption
-          }
-        }, { statusJidList: [from] });
-        await conn.relayMessage("status@broadcast", statusMsg.message, { messageId: statusMsg.key.id, statusJidList: [from] });
+        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
 
-        // 2. Notify Group
+        console.log("[gstatus/image] Uploading image via sendMessage → status@broadcast");
+        // sendMessage handles status CDN upload correctly — prepareWAMessageMedia doesn't
+        const statusMsg = await conn.sendMessage(
+          "status@broadcast",
+          { image: buffer, caption },
+          { statusJidList: [from, conn.user.id], broadcast: true }
+        );
+        console.log("[gstatus/image] ✅ Status posted, key:", statusMsg?.key?.id);
+
+        console.log("[gstatus/image] Notifying group:", from);
         const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: {
-            message: statusMsg.message
-          }
+          groupStatusMessageV2: { message: statusMsg.message }
         }, { quoted: mek });
         await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
+        console.log("[gstatus/image] ✅ Group notification sent, key:", groupMsg?.key?.id);
 
-        return reply("✅ Full Hybrid Image Status posted!");
+        return reply("✅ Image Group Status posted!");
       }
 
       else if (type === "video") {
-        let buffer, caption;
-        if (quoted && quoted.type === "videoMessage") {
-          buffer = await quoted.download();
-          caption = args.slice(1).join(" ").trim();
-        } else {
+        if (!buffer) {
           const videoUrl = args[1];
-          if (!videoUrl) return reply("⚠️ Provide video URL or reply to a video.");
+          if (!videoUrl) return reply("⚠️ Provide video URL or reply to/attach a video.");
           buffer = { url: videoUrl };
           caption = args.slice(2).join(" ").trim();
         }
 
-        const { prepareWAMessageMedia, generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-        const media = await prepareWAMessageMedia({ video: buffer }, { upload: conn.waUploadToServer });
-        
-        // 1. Post to Status Tab
-        const statusMsg = await generateWAMessageFromContent("status@broadcast", {
-          videoMessage: {
-            ...media.videoMessage,
-            caption: caption
-          }
-        }, { statusJidList: [from] });
-        await conn.relayMessage("status@broadcast", statusMsg.message, { messageId: statusMsg.key.id, statusJidList: [from] });
+        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
 
-        // 2. Notify Group
+        console.log("[gstatus/video] Uploading video via sendMessage → status@broadcast");
+        const statusMsg = await conn.sendMessage(
+          "status@broadcast",
+          { video: buffer, caption },
+          { statusJidList: [from, conn.user.id], broadcast: true }
+        );
+        console.log("[gstatus/video] ✅ Status posted, key:", statusMsg?.key?.id);
+
+        console.log("[gstatus/video] Notifying group:", from);
         const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: {
-            message: statusMsg.message
-          }
+          groupStatusMessageV2: { message: statusMsg.message }
         }, { quoted: mek });
         await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
+        console.log("[gstatus/video] ✅ Group notification sent, key:", groupMsg?.key?.id);
 
-        return reply("✅ Full Hybrid Video Status posted!");
+        return reply("✅ Video Group Status posted!");
       }
 
       else if (type === "audio") {
-        let buffer;
-        if (quoted && (quoted.type === "audioMessage" || quoted.type === "pttMessage")) {
-          buffer = await quoted.download();
-        } else {
+        if (!buffer) {
           const audioUrl = args[1];
-          if (!audioUrl) return reply("⚠️ Provide audio URL or reply to an audio message.");
+          if (!audioUrl) return reply("⚠️ Provide audio URL or reply to/attach audio.");
           buffer = { url: audioUrl };
         }
 
-        const { prepareWAMessageMedia, generateWAMessageFromContent } = require("@whiskeysockets/baileys");
-        const media = await prepareWAMessageMedia({ audio: buffer }, { upload: conn.waUploadToServer });
-        
-        // 1. Post to Status Tab
-        const statusMsg = await generateWAMessageFromContent("status@broadcast", {
-          audioMessage: {
-            ...media.audioMessage
-          }
-        }, { statusJidList: [from] });
-        await conn.relayMessage("status@broadcast", statusMsg.message, { messageId: statusMsg.key.id, statusJidList: [from] });
+        const { generateWAMessageFromContent } = require("@whiskeysockets/baileys");
 
-        // 2. Notify Group
+        console.log("[gstatus/audio] Uploading audio via sendMessage → status@broadcast");
+        const statusMsg = await conn.sendMessage(
+          "status@broadcast",
+          { audio: buffer, mimetype: "audio/mp4" },
+          { statusJidList: [from, conn.user.id], broadcast: true }
+        );
+        console.log("[gstatus/audio] ✅ Status posted, key:", statusMsg?.key?.id);
+
+        console.log("[gstatus/audio] Notifying group:", from);
         const groupMsg = await generateWAMessageFromContent(from, {
-          groupStatusMessageV2: {
-            message: statusMsg.message
-          }
+          groupStatusMessageV2: { message: statusMsg.message }
         }, { quoted: mek });
         await conn.relayMessage(from, groupMsg.message, { messageId: groupMsg.key.id });
+        console.log("[gstatus/audio] ✅ Group notification sent, key:", groupMsg?.key?.id);
 
-        return reply("✅ Full Hybrid Audio Status posted!");
+        return reply("✅ Audio Group Status posted!");
       }
     } catch (err) {
-      console.error("Gstatus error:", err);
+      console.error("[gstatus] ❌ Error:", err.message, err.stack);
       await reply(`❌ Failed to send ${type} group status.\n\n*Error:* ${err.message || err}`);
     }
   }

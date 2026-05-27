@@ -256,55 +256,77 @@ cmd(
     react: "🖇",
     desc: "Convert image/video/audio to a permanent URL (Catbox)",
     category: "utility",
-    usage: ".tourl (reply to media)",
+    usage: ".tourl (reply to media or send with caption)",
     noPrefix: false,
   },
-  async (conn, mek, m, { from, reply }) => {
+  async (conn, mek, m, { from, quoted, reply }) => {
     try {
-      // Determine target message (quoted or current)
-      const isQuoted = !!(mek.message?.extendedTextMessage?.contextInfo?.quotedMessage);
-      const quotedMsg = isQuoted ? mek.message.extendedTextMessage.contextInfo.quotedMessage : null;
-      
-      // Build a minimalist mek for downloadMediaMessage
-      let targetMek;
-      if (isQuoted) {
-        const ctx = mek.message.extendedTextMessage.contextInfo;
-        targetMek = {
-          key: {
-            remoteJid: from,
-            fromMe: false,
-            id: ctx.stanzaId,
-            participant: ctx.participant
-          },
-          message: ctx.quotedMessage
-        };
-      } else {
-        targetMek = mek;
+      function unwrapMessage(message) {
+        if (!message) return null;
+        if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+        if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+        if (message.viewOnceMessageV2Extension?.message) return unwrapMessage(message.viewOnceMessageV2Extension.message);
+        if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+        if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+        return message;
       }
 
-      // Check for media
-      const mediaMsg = targetMek.message?.imageMessage || 
-                       targetMek.message?.videoMessage || 
-                       targetMek.message?.audioMessage || 
-                       targetMek.message?.stickerMessage ||
-                       targetMek.message?.documentMessage;
+      function getMediaMessage(mek, quoted) {
+        if (quoted) {
+          const mtype = quoted.mtype || "";
+          const isImage = mtype === "imageMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/"));
+          const isVideo = mtype === "videoMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/"));
+          const isAudio = mtype === "audioMessage" || mtype === "pttMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/"));
+          const isSticker = mtype === "stickerMessage";
+          
+          if (isImage || isVideo || isAudio || isSticker) {
+            return {
+              download: quoted.download,
+              mimetype: quoted.msg?.mimetype || (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/mp4" : "image/webp"),
+              isImage,
+              isVideo,
+              isAudio,
+              isSticker
+            };
+          }
+        }
+        
+        const currentMsg = unwrapMessage(mek.message);
+        if (currentMsg) {
+          const isImage = !!currentMsg.imageMessage;
+          const isVideo = !!currentMsg.videoMessage;
+          const isAudio = !!currentMsg.audioMessage;
+          
+          if (isImage || isVideo || isAudio) {
+            return {
+              download: async () => {
+                const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+                return downloadMediaMessage(mek, "buffer", {});
+              },
+              mimetype: isImage ? currentMsg.imageMessage.mimetype : isVideo ? currentMsg.videoMessage.mimetype : currentMsg.audioMessage.mimetype,
+              isImage,
+              isVideo,
+              isAudio,
+              isSticker: false
+            };
+          }
+        }
+        
+        return null;
+      }
 
-      if (!mediaMsg) {
-        return reply(`╭━〔 *UPLOAD DENIED* 〕━╮\n┃ 🔎 *Crit:* No physical media.\n┃ 💡 *Help:* Reply to a photo/video.\n╰━━━━━━━━━━━━━━━━━━╯`);
+      const media = getMediaMessage(mek, quoted);
+      if (!media) {
+        return reply(`╭━〔 *UPLOAD DENIED* 〕━╮\n┃ 🔎 *Crit:* No physical media.\n┃ 💡 *Help:* Reply to a photo/video or send one with the command in the caption.\n╰━━━━━━━━━━━━━━━━━━╯`);
       }
 
       await reply(`╭━═『 *UPLOADING* 』━╮\n┃ 📡 *Mode:* Moving to cloud...\n┃ ⏳ *Wait:* Almost there!\n╰━━━━━━━━━━━━━━━━╯`);
 
       // Download
-      const buffer = await downloadMediaMessage(
-        targetMek,
-        "buffer",
-        {},
-        { reuploadRequest: conn.updateMediaMessage }
-      );
+      const buffer = await media.download();
 
       // Temp store for FormData
-      const ext = mediaMsg.mimetype?.split("/")[1] || "bin";
+      const ext = media.mimetype?.split("/")[1] || "bin";
       const tempPath = path.join(os.tmpdir(), `hans_up_${Date.now()}.${ext}`);
       fs.writeFileSync(tempPath, buffer);
 

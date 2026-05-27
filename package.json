@@ -1,11 +1,12 @@
 {
   "name": "hans___md",
-  "version": "1.2.4.2",
+  "version": "1.2.5.1",
   "description": "HANS MD WhatsApp bot (Baileys v7 master, CommonJS)",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "pm2 start ecosystem.config.js",
+    "start": "node index.js",
+    "start:pm2": "pm2 start ecosystem.config.js",
     "gen:protobuf": "sh WAProto/GenerateStatics.sh",
     "postinstall": "cp -r node_modules/gifted/WAProto/* node_modules/@whiskeysockets/baileys/WAProto/ && sed -i 's/var $protobuf = require(\"protobufjs\\/minimal\");/import $protobuf from \"protobufjs\\/minimal.js\";/g' node_modules/@whiskeysockets/baileys/WAProto/index.js && sed -i 's/module.exports = $root;/export const proto = $root.proto; export default $root;/g' node_modules/@whiskeysockets/baileys/WAProto/index.js && node patch.js",
     "format": "prettier --write \"src/**/*.{ts,js,json,md}\"",

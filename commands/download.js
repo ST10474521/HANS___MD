@@ -542,7 +542,7 @@ cmd({
 
 cmd({
   pattern: "gitclone",
-  alias: ["gitdl", "repo"],
+  alias: ["gitdl"],
   react: "🐙",
   category: "download",
   desc: "Clone and download a GitHub repository as ZIP",

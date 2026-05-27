@@ -5,6 +5,60 @@ const { downloadMediaMessage } = require("@whiskeysockets/baileys");
 const axios = require("axios");
 const config = require("../config");
 
+function getMediaMessage(mek, quoted) {
+  function unwrapMessage(message) {
+    if (!message) return null;
+    if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+    if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+    if (message.viewOnceMessageV2Extension?.message) return unwrapMessage(message.viewOnceMessageV2Extension.message);
+    if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+    if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+    return message;
+  }
+
+  if (quoted) {
+    const mtype = quoted.mtype || "";
+    const isImage = mtype === "imageMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("image/"));
+    const isVideo = mtype === "videoMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("video/"));
+    const isAudio = mtype === "audioMessage" || mtype === "pttMessage" || (mtype === "documentMessage" && quoted.msg?.mimetype?.startsWith("audio/"));
+    const isSticker = mtype === "stickerMessage";
+
+    if (isImage || isVideo || isAudio || isSticker) {
+      return {
+        download: quoted.download,
+        mimetype: quoted.msg?.mimetype || (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/mp4" : "image/webp"),
+        isImage,
+        isVideo,
+        isAudio,
+        isSticker
+      };
+    }
+  }
+
+  const currentMsg = unwrapMessage(mek.message);
+  if (currentMsg) {
+    const isImage = !!currentMsg.imageMessage;
+    const isVideo = !!currentMsg.videoMessage;
+    const isAudio = !!currentMsg.audioMessage;
+
+    if (isImage || isVideo || isAudio) {
+      return {
+        download: async () => {
+          const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+          return downloadMediaMessage(mek, "buffer", {});
+        },
+        mimetype: isImage ? currentMsg.imageMessage.mimetype : isVideo ? currentMsg.videoMessage.mimetype : currentMsg.audioMessage.mimetype,
+        isImage,
+        isVideo,
+        isAudio,
+        isSticker: false
+      };
+    }
+  }
+
+  return null;
+}
+
 // --- IMAGE SCANNER ---
 cmd({
   pattern: "imgscan",
@@ -12,26 +66,17 @@ cmd({
   react: "🔍",
   category: "tools",
   desc: "Identify/Scan an image via AI",
-  usage: ".imgscan (reply to image)",
+  usage: ".imgscan (reply to image or send with caption)",
   noPrefix: false,
-}, async (conn, mek, m, { from, reply }) => {
+}, async (conn, mek, m, { from, quoted, reply }) => {
   try {
-    const isQuoted = !!(mek.message?.extendedTextMessage?.contextInfo?.quotedMessage);
-    const mediaMsg = isQuoted ? mek.message.extendedTextMessage.contextInfo.quotedMessage : mek.message;
-    const hasImage = mediaMsg?.imageMessage;
-
-    if (!hasImage) return reply("❌ Please reply to an image.");
+    const media = getMediaMessage(mek, quoted);
+    if (!media || !media.isImage) return reply("❌ Please reply to or attach an image.");
 
     await reply("╭━═ 『 *SCANNING* 』 ═━╮\n┃ 📡 *Mode:* AI Identification\n┃ ⏳ *Status:* Deep Analysis...\n╰━━━━━━━━━━━━━━━━╯");
 
-    const buffer = await downloadMediaMessage(
-      isQuoted ? { key: mek.message.extendedTextMessage.contextInfo, message: mediaMsg } : mek,
-      "buffer",
-      {},
-      { reuploadRequest: conn.updateMediaMessage }
-    );
-
-    const imageUrl = await uploadToCatbox(buffer, hasImage.mimetype);
+    const buffer = await media.download();
+    const imageUrl = await uploadToCatbox(buffer, media.mimetype);
     const url = `https://apis.davidcyril.name.ng/imgscan?url=${encodeURIComponent(imageUrl)}`;
     const { data } = await axios.get(url);
 
@@ -62,29 +107,19 @@ cmd({
   react: "✨",
   category: "tools",
   desc: "Enhance image quality (HD)",
-  usage: ".remini (reply to image)",
+  usage: ".remini (reply to image or send with caption)",
   noPrefix: false,
-}, async (conn, mek, m, { from, reply }) => {
+}, async (conn, mek, m, { from, quoted, reply }) => {
   try {
-    const isQuoted = !!(mek.message?.extendedTextMessage?.contextInfo?.quotedMessage);
-    const mediaMsg = isQuoted ? mek.message.extendedTextMessage.contextInfo.quotedMessage : mek.message;
-    const hasImage = mediaMsg?.imageMessage;
-
-    if (!hasImage) return reply("❌ Please reply to an image.");
+    const media = getMediaMessage(mek, quoted);
+    if (!media || !media.isImage) return reply("❌ Please reply to or attach an image.");
 
     await reply("╭━═ 『 *ENHANCING* 』 ═━╮\n┃ 📡 *Mode:* HD Restoration\n┃ ⏳ *Status:* Processing...\n╰━━━━━━━━━━━━━━━━━╯");
 
-    const buffer = await downloadMediaMessage(
-      isQuoted ? { key: mek.message.extendedTextMessage.contextInfo, message: mediaMsg } : mek,
-      "buffer",
-      {},
-      { reuploadRequest: conn.updateMediaMessage }
-    );
-
-    const imageUrl = await uploadToCatbox(buffer, hasImage.mimetype);
+    const buffer = await media.download();
+    const imageUrl = await uploadToCatbox(buffer, media.mimetype);
     const url = `https://apis.davidcyril.name.ng/remini?url=${encodeURIComponent(imageUrl)}`;
-    
-    // Result is an image
+
     await conn.sendMessage(from, {
       image: { url: url },
       caption: `╭━═『 *ENHANCED HD* 』━╮\n┃ ✨ *Quality:* Masterpiece\n╰━━━━━━━━━━━━━━━╯\n\n🚀 *${config.BOT_NAME}*`,
@@ -104,26 +139,17 @@ cmd({
   react: "✂️",
   category: "tools",
   desc: "Remove image background",
-  usage: ".rmbg (reply to image)",
+  usage: ".rmbg (reply to image or send with caption)",
   noPrefix: false,
-}, async (conn, mek, m, { from, reply }) => {
+}, async (conn, mek, m, { from, quoted, reply }) => {
   try {
-    const isQuoted = !!(mek.message?.extendedTextMessage?.contextInfo?.quotedMessage);
-    const mediaMsg = isQuoted ? mek.message.extendedTextMessage.contextInfo.quotedMessage : mek.message;
-    const hasImage = mediaMsg?.imageMessage;
-
-    if (!hasImage) return reply("❌ Please reply to an image.");
+    const media = getMediaMessage(mek, quoted);
+    if (!media || !media.isImage) return reply("❌ Please reply to or attach an image.");
 
     await reply("╭━═ 『 *REMOVING* 』 ═━╮\n┃ 📡 *Mode:* Background Cut\n┃ ⏳ *Status:* Cleaning...\n╰━━━━━━━━━━━━━━━━━╯");
 
-    const buffer = await downloadMediaMessage(
-      isQuoted ? { key: mek.message.extendedTextMessage.contextInfo, message: mediaMsg } : mek,
-      "buffer",
-      {},
-      { reuploadRequest: conn.updateMediaMessage }
-    );
-
-    const imageUrl = await uploadToCatbox(buffer, hasImage.mimetype);
+    const buffer = await media.download();
+    const imageUrl = await uploadToCatbox(buffer, media.mimetype);
     const primaryUrl = `https://apis.davidcyril.name.ng/removebg?url=${encodeURIComponent(imageUrl)}`;
 
     try {
@@ -208,7 +234,7 @@ cmd({
 // --- TRANSLATE ---
 cmd({
   pattern: "translate",
-  alias: ["tr"],
+  alias: ["trt"],
   react: "🌍",
   category: "tools",
   desc: "Translate text using Google Translate",

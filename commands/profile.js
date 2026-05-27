@@ -2,6 +2,79 @@ const { cmd } = require("../command");
 const fs = require("fs");
 const path = require("path");
 
+function getCountryFromPhone(phone) {
+  const codes = {
+    '27': '🇿🇦 South Africa', '1': '🇺🇸 USA/Canada',
+    '44': '🇬🇧 UK', '91': '🇮🇳 India', '234': '🇳🇬 Nigeria',
+    '254': '🇰🇪 Kenya', '255': '🇹🇿 Tanzania', '256': '🇺🇬 Uganda',
+    '233': '🇬🇭 Ghana', '237': '🇨🇲 Cameroon', '55': '🇧🇷 Brazil',
+    '62': '🇮🇩 Indonesia', '60': '🇲🇾 Malaysia', '63': '🇵🇭 Philippines',
+    '92': '🇵🇰 Pakistan', '880': '🇧🇩 Bangladesh',
+  };
+  for (const [code, country] of Object.entries(codes)) {
+    if (phone.startsWith(code)) return country;
+  }
+  return '🌍 Unknown';
+}
+
+async function fetchUserInfo(conn, jid) {
+  const info = { jid };
+
+  // Profile picture (high res, fallback to low res)
+  info.pp = await conn.profilePictureUrl(jid, 'image').catch(
+    () => conn.profilePictureUrl(jid).catch(() => null)
+  );
+
+  // About / status text
+  try {
+    const s = await conn.fetchStatus(jid);
+    info.status = s?.status || '(no status set)';
+    info.statusSetAt = s?.setAt ? new Date(s.setAt * 1000).toLocaleString() : null;
+  } catch { info.status = '(private or none)'; }
+
+  // Verify number exists on WA
+  try {
+    const phone = jid.replace('@s.whatsapp.net', '');
+    const [res] = await conn.onWhatsApp(phone);
+    info.exists   = res?.exists ?? true;
+    info.waId     = res?.jid ?? jid;
+    info.isBiz    = res?.isBusiness ?? false;
+  } catch { info.exists = true; }
+
+  // Business profile (if applicable)
+  try {
+    const biz = await conn.getBusinessProfile(jid);
+    if (biz) {
+      info.bizDescription = biz.description || null;
+      info.bizCategory    = biz.category || null;
+      info.bizEmail       = biz.email || null;
+      info.bizWebsite     = biz.website?.[0] || null;
+    }
+  } catch {}
+
+  // Extract phone number & country
+  const phone = jid.replace('@s.whatsapp.net', '').split('@')[0];
+  info.phone   = '+' + phone;
+  info.country = getCountryFromPhone(phone);
+
+  return info;
+}
+
+function formatStalkText(info, label = 'User Info') {
+  return `╭─── 🔍 *${label}* ───
+│
+│ 📱 *Phone:* ${info.phone}
+│ 🌍 *Country:* ${info.country}
+│ 🆔 *JID:* ${info.jid}
+│ ✅ *On WhatsApp:* ${info.exists ? 'Yes' : 'No'}
+│ 💼 *Business:* ${info.isBiz ? 'Yes' : 'No'}
+│
+│ 📝 *About:* ${info.status}
+${info.statusSetAt ? `│ 🕐 *Set at:* ${info.statusSetAt}\n` : ''}${info.bizCategory ? `│ 🏷️ *Category:* ${info.bizCategory}\n` : ''}${info.bizDescription ? `│ 📋 *Biz Desc:* ${info.bizDescription}\n` : ''}${info.bizEmail ? `│ 📧 *Email:* ${info.bizEmail}\n` : ''}${info.bizWebsite ? `│ 🌐 *Website:* ${info.bizWebsite}\n` : ''}│
+│ 🖼️ *Profile Pic:* ${info.pp ? 'Available' : 'Private/None'}
+╰─────────────────────`;
+}
+
 cmd(
   {
     pattern: "setname",
@@ -114,60 +187,134 @@ cmd(
   }
 );
 
+// ── LID → PN resolver ────────────────────────────────────────────────────────
+async function resolveToPN(conn, jid) {
+  if (!jid) return null;
+  if (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@g.us")) return jid;
+
+  if (jid.endsWith("@lid")) {
+    console.log("[resolveToPN] LID detected:", jid, "— attempting resolution");
+
+    // Try v7 lidMapping store first
+    try {
+      const store = conn?.signalRepository?.lidMapping;
+      if (store && typeof store.getPNForLID === "function") {
+        const pn = await store.getPNForLID(jid);
+        console.log("[resolveToPN] lidMapping.getPNForLID result:", pn);
+        if (pn && pn.endsWith("@s.whatsapp.net")) return pn;
+      } else {
+        console.log("[resolveToPN] lidMapping store or getPNForLID not available");
+      }
+    } catch (e) {
+      console.error("[resolveToPN] lidMapping lookup failed:", e.message);
+    }
+
+    // Fallback: scan contacts cache
+    try {
+      const contacts = conn?.store?.contacts || conn?.contacts || {};
+      const keys = Object.keys(contacts);
+      console.log("[resolveToPN] Scanning contacts cache, total entries:", keys.length);
+      for (const [phoneJid, contact] of Object.entries(contacts)) {
+        if (contact?.lid === jid || contact?.id === jid) {
+          if (phoneJid.endsWith("@s.whatsapp.net")) {
+            console.log("[resolveToPN] Found via contacts cache:", phoneJid);
+            return phoneJid;
+          }
+        }
+      }
+      console.log("[resolveToPN] Not found in contacts cache.");
+    } catch (e) {
+      console.error("[resolveToPN] Contacts scan failed:", e.message);
+    }
+
+    return null; // unresolvable
+  }
+  return jid;
+}
+
 cmd(
   {
     pattern: "getpp",
-    alias: ["profilepic", "pp"],
-    react: "",
+    alias: ["pp", "profilepic"],
+    react: "🖼️",
     category: "general",
-    desc: "Get profile picture",
-    usage: ".getpp @user | .getpp 1234567890 | .getpp (reply to message)",
+    desc: "Get profile picture of a user or group.",
+    usage: ".getpp [@mention | reply | number | blank=group/DM partner]",
     noPrefix: false,
   },
-  async (conn, mek, m, { from, reply, args, mentionedJid, quoted }) => {
-    let targetJid;
-    
-    // Get target from quoted message first
+  async (conn, mek, m, { from, reply, args, mentionedJid, quoted, isGroup }) => {
+    let targetJid = null;
+    let label = "";
+
+    console.log("[getpp] Triggered from:", from, "| isGroup:", isGroup);
+    console.log("[getpp] quoted?.sender:", quoted?.sender, "| mentionedJid:", mentionedJid, "| args:", args);
+
+    const { getContentType } = require("@whiskeysockets/baileys");
+
     if (quoted && quoted.sender) {
-      targetJid = quoted.sender;
+      // Check participantAlt first — v7 populates this as the PN when participant is a LID
+      const rawType = getContentType(mek.message);
+      const ctx = mek.message?.[rawType]?.contextInfo;
+      const candidate = ctx?.participantAlt || quoted.sender;
+      console.log("[getpp] Quoted path — rawType:", rawType, "| participantAlt:", ctx?.participantAlt, "| quoted.sender:", quoted.sender, "| using candidate:", candidate);
+      targetJid = await resolveToPN(conn, candidate);
+      label = "Replied User";
+    } else if (Array.isArray(mentionedJid) && mentionedJid.length > 0) {
+      console.log("[getpp] Mention path — raw jid:", mentionedJid[0]);
+      targetJid = await resolveToPN(conn, mentionedJid[0]);
+      label = "Mentioned User";
+    } else if (args[0] && /^\d+$/.test(args[0].trim())) {
+      targetJid = `${args[0].trim()}@s.whatsapp.net`;
+      label = "User";
+      console.log("[getpp] Number path — jid:", targetJid);
+    } else if (isGroup) {
+      targetJid = from;
+      label = "Group";
+      console.log("[getpp] Group path — jid:", targetJid);
+    } else {
+      targetJid = from;
+      label = "Chat Partner";
+      console.log("[getpp] DM fallback path — jid:", targetJid);
     }
-    // Get target from mentions
-    else if (Array.isArray(mentionedJid) && mentionedJid.length > 0) {
-      targetJid = mentionedJid[0];
-    } 
-    // Get target from args
-    else if (args[0]) {
-      const arg = args[0].trim();
-      if (/^\d+$/.test(arg)) {
-        targetJid = `${arg}@s.whatsapp.net`;
-      } else if (arg.includes("@")) {
-        targetJid = arg;
-      }
+
+    console.log("[getpp] Resolved targetJid:", targetJid, "| label:", label);
+
+    // LID guard — can't call profilePictureUrl on @lid
+    if (!targetJid || targetJid.endsWith("@lid")) {
+      console.warn("[getpp] ⚠️ targetJid is unresolvable LID or null:", targetJid);
+      return reply(
+        "❌ Can't fetch profile picture for this user.\n\n" +
+        "💡 WhatsApp is hiding their phone number (LID). " +
+        "Ask them to send the bot a message directly first, then retry."
+      );
     }
-    // Default to sender
-    else {
-      targetJid = mek.sender;
-    }
-    
-    if (!targetJid) {
-      return reply("Please mention a user, provide a number, or reply to a message.\nUsage: .getpp @user | .getpp 1234567890 | .getpp (reply)");
-    }
-    
+
     try {
-      const ppUrl = await conn.profilePictureUrl(targetJid, 'image');
-      
-      if (ppUrl) {
-        // Send the profile picture as image only
-        await conn.sendMessage(from, {
-          image: { url: ppUrl },
-          mentions: [targetJid]
-        }, { quoted: mek, ...require("../lib/newsletter").getContext({ title: "Profile Picture", body: "User profile picture" }) });
-      } else {
-        await reply(`${targetJid.split('@')[0]} doesn't have a profile picture.`);
+      console.log("[getpp] Fetching profilePictureUrl for:", targetJid);
+      const ppUrl = await conn.profilePictureUrl(targetJid, "image")
+        .catch((e) => {
+          console.warn("[getpp] High-res fetch failed:", e.message, "— trying low-res");
+          return conn.profilePictureUrl(targetJid).catch((e2) => {
+            console.warn("[getpp] Low-res fetch also failed:", e2.message);
+            return null;
+          });
+        });
+
+      console.log("[getpp] ppUrl result:", ppUrl ? ppUrl.substring(0, 60) + "..." : "null");
+
+      if (!ppUrl) {
+        return reply(`❌ No profile picture found for *${label}* (private or not set).`);
       }
+
+      await conn.sendMessage(
+        from,
+        { image: { url: ppUrl }, caption: `🖼️ *Profile Picture — ${label}*` },
+        { quoted: mek, ...require("../lib/newsletter").getContext({ title: "Profile Picture", body: label }) }
+      );
+      console.log("[getpp] ✅ Profile picture sent for:", targetJid);
     } catch (error) {
-      console.error("Get PP error:", error);
-      await reply(`Failed to get profile picture: ${error.message}`);
+      console.error("[getpp] ❌ Unexpected error:", error.message, error.stack);
+      await reply(`❌ Failed to get profile picture: ${error.message}`);
     }
   }
 );
@@ -176,28 +323,106 @@ cmd(
   {
     pattern: "gcpp",
     alias: ["grouppp", "groupprofilepic"],
-    react: "",
+    react: "🖼️",
     category: "general",
-    desc: "Get group information and invite link",
-    usage: ".gcpp (in group chat)",
+    desc: "Get group profile picture",
+    usage: ".gcpp",
     noPrefix: false,
   },
   async (conn, mek, m, { from, reply, isGroup }) => {
-    if (!isGroup) return reply("This command only works in groups.");
+    if (!isGroup) return reply("❌ This command only works in groups.");
     
     try {
-      // Get group metadata and invite link
-      const metadata = await conn.groupMetadata(from);
-      const inviteCode = await conn.groupInviteCode(from);
-      const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
-      
+      const ppUrl = await conn.profilePictureUrl(from, 'image').catch(
+        () => conn.profilePictureUrl(from).catch(() => null)
+      );
+
+      if (!ppUrl) {
+        return reply("❌ No profile picture found for this group.");
+      }
+
       await conn.sendMessage(from, {
-        text: `Group Information\n\nGroup Name: ${metadata.subject}\nGroup ID: ${from}\nMembers: ${metadata.participants.length}\nAdmins: ${metadata.participants.filter(p => p.admin).length}\nCreated: ${metadata.creation ? new Date(metadata.creation * 1000).toLocaleDateString() : 'Unknown'}\n\nInvite Link: ${inviteLink}`,
-        mentions: [metadata.owner || from]
-      }, { quoted: mek, ...require("../lib/newsletter").getContext({ title: "Group Information", body: "Group details and invite link" }) });
+        image: { url: ppUrl },
+        caption: `🖼️ *Group Profile Picture*\n📎 ${ppUrl}`
+      }, { quoted: mek, ...require("../lib/newsletter").getContext({ title: "Group PP", body: "Group profile picture" }) });
+
     } catch (error) {
       console.error("Group PP error:", error);
-      await reply(`Failed to get group information: ${error.message}`);
+      await reply(`❌ Failed to get group profile picture: ${error.message}`);
+    }
+  }
+);
+
+cmd(
+  {
+    pattern: "stalk",
+    alias: ["whois"],
+    react: "🔍",
+    category: "general",
+    desc: "Stalk a user to fetch all public WA info",
+    usage: ".stalk @user | .stalk (reply to user)",
+    noPrefix: false,
+  },
+  async (conn, mek, m, { from, args, mentionedJid, quoted, isGroup, reply }) => {
+    let targetJid = null;
+
+    if (quoted && quoted.sender) {
+      targetJid = quoted.sender;
+    } else if (Array.isArray(mentionedJid) && mentionedJid.length > 0) {
+      targetJid = mentionedJid[0];
+    } else if (args[0] && /^\d+$/.test(args[0].trim())) {
+      targetJid = `${args[0].trim()}@s.whatsapp.net`;
+    } else if (!isGroup) {
+      targetJid = from;
+    } else {
+      targetJid = m.sender;
+    }
+
+    try {
+      const info = await fetchUserInfo(conn, targetJid);
+      const caption = formatStalkText(info, "User Info");
+
+      if (info.pp) {
+        await conn.sendMessage(from, {
+          image: { url: info.pp },
+          caption
+        }, { quoted: mek, ...require("../lib/newsletter").getContext({ title: "User Stalk", body: info.phone }) });
+      } else {
+        await reply(caption);
+      }
+    } catch (e) {
+      console.error("Stalk error:", e);
+      await reply("❌ Failed to fetch info: " + e.message);
+    }
+  }
+);
+
+cmd(
+  {
+    pattern: "whoami",
+    react: "🪞",
+    category: "general",
+    desc: "Stalk yourself to show your public info",
+    usage: ".whoami",
+    noPrefix: false,
+  },
+  async (conn, mek, m, { from, reply }) => {
+    try {
+      const targetJid = m.sender;
+      const info = await fetchUserInfo(conn, targetJid);
+      const caption = formatStalkText(info, "Who Are You?");
+
+      if (info.pp) {
+        await conn.sendMessage(from, {
+          image: { url: info.pp },
+          caption
+        }, { quoted: mek, ...require("../lib/newsletter").getContext({ title: "Self Stalk", body: info.phone }) });
+      } else {
+        await reply(caption);
+      }
+    } catch (e) {
+      console.error("Whoami error:", e);
+      await reply("❌ Failed to fetch info: " + e.message);
     }
   }
 );
