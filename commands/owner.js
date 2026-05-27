@@ -547,23 +547,26 @@ cmd(
     usage: ".groups",
     noPrefix: false
   },
-  async (conn, mek, m, { isOwner, reply }) => {
-    if (!isOwner) return reply("❌ Owner only.");
+  async (conn, mek, m, { isOwner, isSudo, reply }) => {
+    if (!isOwner && !isSudo) return reply("❌ Owner only.");
+    try {
+      console.log("[.groups] Fetching all participating groups...");
+      const all = await conn.groupFetchAllParticipating();
+      const entries = Object.entries(all);
+      console.log("[.groups] Total groups found:", entries.length);
 
-    let groups = [];
-    if (conn.store?.chats) {
-      groups = Array.from(conn.store.chats.values()).filter((c) => c.id?.endsWith("@g.us"));
-    } else if (conn.chats) {
-      groups = Object.values(conn.chats).filter((c) => c.id?.endsWith("@g.us"));
+      if (!entries.length) return reply("📭 Bot is not in any groups.");
+
+      let text = `📋 *Groups (${entries.length} total)*\n\n`;
+      entries.forEach(([jid, meta], i) => {
+        console.log(`[.groups] ${i + 1}. ${meta.subject} | members: ${meta.participants?.length} | jid: ${jid}`);
+        text += `${i + 1}. *${meta.subject}*\n   👥 ${meta.participants?.length ?? "?"} members\n   \`${jid}\`\n\n`;
+      });
+      await reply(text);
+    } catch (e) {
+      console.error("[.groups] ❌ Error:", e.message, e.stack);
+      await reply(`❌ Failed: ${e.message}`);
     }
-
-    if (!groups.length) return reply("❌ No groups found.");
-
-    let txt = "📂 *Groups List:*\n\n";
-    groups.forEach((g, i) => {
-      txt += `${i + 1}. ${g.name || "Unnamed"}\n${g.id}\n\n`;
-    });
-    await reply(txt.trim());
   }
 );
 

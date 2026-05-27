@@ -309,18 +309,25 @@ async function startBot() {
       const autoStatusLike = db.env?.AUTO_STATUS_LIKE !== undefined ? db.env.AUTO_STATUS_LIKE : config.AUTO_STATUS_LIKE;
       if (mek.key.remoteJid === "status@broadcast" && !mek.key.fromMe && (autoStatus || autoStatusLike)) {
         try {
-          if (autoStatus) await conn.readMessages([mek.key]);
+          if (autoStatus) {
+            console.log("[STATUS] Auto-reading status from:", mek.key.participant || mek.key.remoteJid);
+            await conn.readMessages([mek.key]);
+          }
           if (autoStatusLike) {
             const statusOwnerJid = mek.key.participant || mek.key.remoteJid;
-            await conn.sendMessage(statusOwnerJid, {
-              react: {
-                text: "❤️",
-                key: mek.key
-              }
+            console.log("[STATUS LIKE] Attempting react → status@broadcast | owner:", statusOwnerJid);
+            await conn.sendMessage(
+              "status@broadcast",
+              { react: { text: "❤️", key: mek.key } },
+              { statusJidList: [statusOwnerJid, conn.user.id] }
+            ).then(() => {
+              console.log("[STATUS LIKE] ✅ React sent successfully to status of:", statusOwnerJid);
+            }).catch((err) => {
+              console.error("[STATUS LIKE] ❌ React failed:", err.message);
             });
           }
         } catch (error) {
-          // Ignore errors with status reactions
+          console.error("[STATUS] ❌ Unexpected error in status handler:", error.message);
         }
         continue;
       }
